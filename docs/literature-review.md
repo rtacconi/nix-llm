@@ -50,7 +50,7 @@ removed from the repository. The arXiv links below are the canonical copies.
   3,500 Linux kernel CVEs in a 24-month window. A host-kernel bug becomes an
   escape only through what the sandbox class exposes: the full surface for runc,
   only the guest kernel and VMM for microVMs, and a minimal surface for gVisor.
-- **Implication:** this confirms the [01-threat-model](01-threat-model.md#shared-kernel-vs-microvm)
+- **Implication:** this confirms the [design](design.md)
   position. It also argues for making the microVM backend the *recommended
   default* for untrusted repositories, and for treating host-kernel patch level
   as an enforced precondition. Seccomp closes most of the
@@ -102,11 +102,11 @@ removed from the repository. The arXiv links below are the canonical copies.
   and injects them at a host-side proxy. AgentBay [9] uses short-lived,
   permission-scoped tokens at a single gateway.
 - **Implication:** NixSandbox already starts workloads with an empty environment
-  and no host paths ([05](05-filesystem-network.md)). Next steps:
+  and no host paths ([design](design.md)). Next steps:
   - Make "no ambient credentials" a tested invariant across env, filesystem and
     `/proc`.
   - Keep secrets out of the sandbox entirely, using proxy-side injection in M9.
-  - State in [01](01-threat-model.md) that git push, CI triggers and API tokens
+  - State in [design](design.md) that git push, CI triggers and API tokens
     are capabilities granted *outside* the kernel boundary.
 
 ### F4. Command-string filtering, input filtering and approval UIs are not security boundaries
@@ -127,7 +127,7 @@ removed from the repository. The arXiv links below are the canonical copies.
 - **Implication:** this confirms the design's premise. Enforcement lives in the
   kernel and in the deterministic supervisor. Any command classifier in the
   orchestrator is UX (for example, skipping snapshots for read-only calls) and
-  must be labelled as such ([13-design-review](13-design-review.md)).
+  must be labelled as such ([design](design.md)).
 
 ### F5. Deterministic, default-deny enforcement beats heuristic or LLM judgement at the boundary
 
@@ -148,7 +148,7 @@ removed from the repository. The arXiv links below are the canonical copies.
 - **Implication:** keep the supervisor's policy language decidable: intervals,
   finite sets, enums and literal path prefixes. Keep it deterministic and
   default-deny. ML judges may only feed audit or advisory channels
-  ([11-benchmarks-observability](11-benchmarks-observability.md)).
+  ([design](design.md)).
 
 ### F6. Narrow-only (monotonic) authority is the key invariant, and it must cover values, not just limits
 
@@ -161,7 +161,7 @@ removed from the repository. The arXiv links below are the canonical copies.
 - **Plan-then-execute [19].** The re-planning loop it recommends reopens control
   flow unless re-plans are narrow-only.
 - **Implication:** generalise the existing "limits may only be ≤ the profile's"
-  rule ([08](08-protocol-api.md)) to every capability-bearing field:
+  rule ([design](design.md)) to every capability-bearing field:
 
   `effective(job) ⊆ request ⊆ principal-allowed ⊆ admin profile`
 
@@ -222,7 +222,7 @@ removed from the repository. The arXiv links below are the canonical copies.
   files such as `AGENTS.md`, `.clinerules/` and `GEMINI.md`, which other tools
   read later.
 - **Implication:**
-  - Treat collected artefacts as untrusted ([05](05-filesystem-network.md)
+  - Treat collected artefacts as untrusted ([design](design.md)
     already does).
   - Flag or refuse write-back of host-auto-executed paths: `.git/hooks`,
     `.envrc`, `.vscode/`, agent config files.
@@ -245,7 +245,7 @@ removed from the repository. The arXiv links below are the canonical copies.
 - **Shortcuts through the harness.** [1] also found four unintended shortcuts,
   two of which went through the *outer harness*: default credentials reachable
   over the bridge gateway.
-- **Implication for [10-testing](10-testing.md):**
+- **Implication for [design](design.md):**
   - Every probe gets a positive control in insecure-dev mode and a matched
     benign twin, so false-block rates are measured.
   - Add a harness-reachability probe: host gateway, loopback services and the
@@ -273,29 +273,29 @@ slice", P2 means "before M9/M10", and P3 means later.
 
 | # | Action | Source | Affects | P |
 |---|--------|--------|---------|---|
-| 1 | Generalise narrow-only to every capability-bearing request field. Property-test the *installed* config ⊆ profile | [16], [14], [19] | [08](08-protocol-api.md), [10](10-testing.md) | P1 |
-| 2 | Structured, machine-readable denials (`policy_denied{field, requested, max}`) so agents adapt instead of looping or probing | [5] §7.6, [16] | [08](08-protocol-api.md) | P1 |
-| 3 | Probe-suite discipline: a positive control per probe (insecure-dev or layer disabled), plus a benign twin with false-block rate reported | [11], [10] | [10](10-testing.md) | P1 |
-| 4 | Map SandboxEscapeBench's 18 task classes and [2]'s 14 kernel primitives to explicit probes (expect "unreachable") | [1], [2] | [10](10-testing.md) | P1 |
-| 5 | Host-information leak probes (CPU model, RAM, kernel version, interrupts, disk model/serial, DMI); decide mask vs accept and document it | [2] §2.2 | [05](05-filesystem-network.md), [01](01-threat-model.md) | P1 |
-| 6 | Harness-reachability probe: host gateway, loopback services, supervisor socket, metadata endpoint | [1] App. C | [10](10-testing.md) | P1 |
-| 7 | `sandbox_died` termination reason, distinct from timeout; self-crash fault tests; log it as a security event | [1] §6.2 | [07](07-resources-cancellation.md), [12](12-failure-modes.md) | P1 |
-| 8 | Cancel epoch check at every effect point (exec, egress CONNECT, artefact export). Invariant: "after cancel ack, zero new CONNECTs for that job" | [12] | [07](07-resources-cancellation.md), [12](12-failure-modes.md) | P1 |
-| 9 | Principal-keyed orchestrator state (results, idempotency keys, artefacts), so `job_id` alone never grants access | [14] | [08](08-protocol-api.md) | P1 |
-| 10 | Optional per-launch preflight canary: a minimal negative-probe set at supervisor start or profile change; fail closed | [10] | [03](03-kernel-primitives.md#feature-detection) | P2 |
+| 1 | Generalise narrow-only to every capability-bearing request field. Property-test the *installed* config ⊆ profile | [16], [14], [19] | [design](design.md), [design](design.md) | P1 |
+| 2 | Structured, machine-readable denials (`policy_denied{field, requested, max}`) so agents adapt instead of looping or probing | [5] §7.6, [16] | [design](design.md) | P1 |
+| 3 | Probe-suite discipline: a positive control per probe (insecure-dev or layer disabled), plus a benign twin with false-block rate reported | [11], [10] | [design](design.md) | P1 |
+| 4 | Map SandboxEscapeBench's 18 task classes and [2]'s 14 kernel primitives to explicit probes (expect "unreachable") | [1], [2] | [design](design.md) | P1 |
+| 5 | Host-information leak probes (CPU model, RAM, kernel version, interrupts, disk model/serial, DMI); decide mask vs accept and document it | [2] §2.2 | [design](design.md), [design](design.md) | P1 |
+| 6 | Harness-reachability probe: host gateway, loopback services, supervisor socket, metadata endpoint | [1] App. C | [design](design.md) | P1 |
+| 7 | `sandbox_died` termination reason, distinct from timeout; self-crash fault tests; log it as a security event | [1] §6.2 | [design](design.md), [design](design.md) | P1 |
+| 8 | Cancel epoch check at every effect point (exec, egress CONNECT, artefact export). Invariant: "after cancel ack, zero new CONNECTs for that job" | [12] | [design](design.md), [design](design.md) | P1 |
+| 9 | Principal-keyed orchestrator state (results, idempotency keys, artefacts), so `job_id` alone never grants access | [14] | [design](design.md) | P1 |
+| 10 | Optional per-launch preflight canary: a minimal negative-probe set at supervisor start or profile change; fail closed | [10] | [design](design.md) | P2 |
 | 11 | Policy linter: flag over-broad Landlock grants, re-enabled kill-listed syscalls and allow-all egress; emit a diff against the base profile | [3] gap 4 | `nsbx-policy` | P2 |
-| 12 | Report each seccomp profile's syscall count next to references (Firecracker 55, gVisor 84, Docker default 361) | [2] §2.1 | [11](11-benchmarks-observability.md) | P2 |
-| 13 | VMM jail: per-thread seccomp verification, Landlock, KVM-fd passing, no QCOW backing files, erofs read-only, no io_uring block path; experiment E7 for user namespace plus KVM | [2] | [02](02-architecture.md), [14](14-roadmap.md) | P2 |
+| 12 | Report each seccomp profile's syscall count next to references (Firecracker 55, gVisor 84, Docker default 361) | [2] §2.1 | [design](design.md) | P2 |
+| 13 | VMM jail: per-thread seccomp verification, Landlock, KVM-fd passing, no QCOW backing files, erofs read-only, no io_uring block path; experiment E7 for user namespace plus KVM | [2] | [design](design.md), [design](design.md) | P2 |
 | 14 | Automated Nix bump plus GHSA/OSV advisory watch for pinned Cloud Hypervisor, guest kernel and runtimes | [2] §2.5 | CI | P2 |
-| 15 | Egress proxy: secrets injected at the proxy (never in the sandbox); per-job DNS/SNI logs; reject non-HTTP(S) schemes and loopback/metadata targets; eTLD+1-aware matching tests | [4], [7], [15], [18] | [05](05-filesystem-network.md) | P2 |
-| 16 | `policy_decision` SSE events (egress allow/deny, cancel ack, limit hits); optional hash-chained audit log | [11], [10] | [08](08-protocol-api.md), [11](11-benchmarks-observability.md) | P2 |
-| 17 | Write-back guard for collected artefacts: flag or refuse host-auto-executed paths | [4], [3], [8] | [05](05-filesystem-network.md) | P2 |
-| 18 | Job provenance label (inputs from untrusted content), which admin policy can bar from egress or host-visible `collect` | [14], [18], [19] | [08](08-protocol-api.md) | P3 |
+| 15 | Egress proxy: secrets injected at the proxy (never in the sandbox); per-job DNS/SNI logs; reject non-HTTP(S) schemes and loopback/metadata targets; eTLD+1-aware matching tests | [4], [7], [15], [18] | [design](design.md) | P2 |
+| 16 | `policy_decision` SSE events (egress allow/deny, cancel ack, limit hits); optional hash-chained audit log | [11], [10] | [design](design.md), [design](design.md) | P2 |
+| 17 | Write-back guard for collected artefacts: flag or refuse host-auto-executed paths | [4], [3], [8] | [design](design.md) | P2 |
+| 18 | Job provenance label (inputs from untrusted content), which admin policy can bar from egress or host-visible `collect` | [14], [18], [19] | [design](design.md) | P3 |
 | 19 | CoW workspace transactions: snapshot, fork, restore, explicit commit; process tree killed on rollback | [5], [8], [10] | new milestone | P3 |
-| 20 | Session grants as scoped sub-jobs with opaque, epoch-bound grant ids; closure only on trusted events | [12], [18] | [08](08-protocol-api.md) | P3 |
-| 21 | Step-scoped capability token (`plan_ref`/`step_id`), single-use, minted when a plan is approved | [19], [16] | [08](08-protocol-api.md) | P3 |
-| 22 | Run SandboxEscapeBench-style nested-VM evaluation in nightly T4 with NixSandbox in place of Docker | [1], [3] gap 1 | [10](10-testing.md) | P3 |
-| 23 | State the scope explicitly: NixSandbox bounds the blast radius of code execution. It does not stop misuse of legitimately granted authority (allowed egress, task-scope overreach inside the workspace) | [6], [12], [14], [16] | [01](01-threat-model.md) | P1 |
+| 20 | Session grants as scoped sub-jobs with opaque, epoch-bound grant ids; closure only on trusted events | [12], [18] | [design](design.md) | P3 |
+| 21 | Step-scoped capability token (`plan_ref`/`step_id`), single-use, minted when a plan is approved | [19], [16] | [design](design.md) | P3 |
+| 22 | Run SandboxEscapeBench-style nested-VM evaluation in nightly T4 with NixSandbox in place of Docker | [1], [3] gap 1 | [design](design.md) | P3 |
+| 23 | State the scope explicitly: NixSandbox bounds the blast radius of code execution. It does not stop misuse of legitimately granted authority (allowed egress, task-scope overreach inside the workspace) | [6], [12], [14], [16] | [design](design.md) | P1 |
 
 ---
 
@@ -384,7 +384,7 @@ Andronchik, Lokhmakov. arXiv:2606.08433v1, 7 Jun 2026. CC BY 4.0.
   verdicts are about product *defaults*, not engines.
 - **For NixSandbox:** see F2, and actions 5, 12, 13 and 14. It also suggests
   documenting a gVisor/runsc backend as a future option in
-  [13](13-design-review.md).
+  [design](design.md).
 
 #### [3] The Balkanization of Execution-Security Research for AI Coding Agents
 
@@ -417,7 +417,7 @@ Rashidi. arXiv:2607.05743v1, 7 Jul 2026. Systematisation of knowledge.
     are included.
 - **For NixSandbox:** see F4 and F9.
   - RC2 supports the "check and use on the same fd" rule
-    ([04](04-privilege-model.md), [05](05-filesystem-network.md)).
+    ([design](design.md), [design](design.md)).
   - Gap 4 motivates action 11.
 
 #### [4] SideKernel: A Usable microVM Sandbox for AI Coding Agents on macOS
@@ -444,7 +444,7 @@ Prasakis (Georgia Tech). arXiv:2610.02456v1, 1 Oct 2026.
   - The developer is also the evaluator.
   - The survey sample leans towards security professionals.
 - **For NixSandbox:** see F3, F9 and F11, and actions 15 and 17. The
-  north/south vocabulary is worth adopting in [01](01-threat-model.md).
+  north/south vocabulary is worth adopting in [design](design.md).
 
 #### [5] Fault-Tolerant Sandboxing for AI Coding Agents: A Transactional Approach
 
@@ -536,7 +536,7 @@ Goel (Microsoft). arXiv:2605.09721v1, 10 May 2026. Short version at IEEE COMPSAC
   - Mitigations are tuned per scenario.
   - Sandboxing is discussed but not measured.
 - **For NixSandbox:** see F3 and actions 15 and 23. The CI/CD
-  privilege-amplifier point belongs in [01](01-threat-model.md).
+  privilege-amplifier point belongs in [design](design.md).
 
 #### [8] Inside the Scaffold: A Source-Code Taxonomy of Coding Agent Architectures
 
