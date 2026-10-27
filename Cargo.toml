@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/nsbx-proto", "crates/nsbx-policy", "crates/nsbx-core"]
+members = ["crates/nsbx-proto", "crates/nsbx-policy", "crates/nsbx-core", "crates/nsbx-pyo3"]
+# The Python binding needs a Python 3.12 interpreter to build; it is built by
+# Nix (maturin) and is left out of plain `cargo build` / `cargo test`.
+default-members = ["crates/nsbx-proto", "crates/nsbx-policy", "crates/nsbx-core"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,7 +1,8 @@
 """Run the orchestrator: ``python -m nsbx_orchestrator CONFIG.json``.
 
-Config keys: ``supervisor_socket``, ``listen_host``, ``listen_port`` and
-``principals`` (a list of ``{"token_sha256", "id", "profiles"}``).
+Config keys: ``supervisor_socket``, ``profiles_dir``, ``listen_host``,
+``listen_port`` and ``principals``: a list of ``{"token_sha256", "id",
+"profiles", "limits"?, "network_max"?, "egress_domains"?}``.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
+from nsbx_policy import Policy
 from starlette.applications import Starlette
 
 from .app import create_app
@@ -23,10 +25,11 @@ from .supervisor import SupervisorClient
 def main() -> None:
     with open(sys.argv[1]) as f:
         cfg = json.load(f)
-    auth = TokenAuth({p["token_sha256"]: Principal(p["id"], frozenset(p["profiles"])) for p in cfg["principals"]})
+    auth = TokenAuth({p["token_sha256"]: Principal.from_config(p) for p in cfg["principals"]})
+    policy = Policy.from_dir(cfg["profiles_dir"])
     client = SupervisorClient(cfg["supervisor_socket"])
     jobs = JobManager(client)
-    app = create_app(jobs, auth)
+    app = create_app(jobs, auth, policy)
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:

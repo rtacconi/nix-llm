@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from nsbx_policy import Policy, PolicyDenied
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -14,7 +15,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .auth import Principal, TokenAuth
-from .jobs import Busy, Conflict, JobManager
+from .jobs import Busy, Conflict, JobManager, JobRecord
 from .schemas import JobRequest
 
 MAX_BODY_BYTES = 128 * 1024
@@ -26,7 +27,7 @@ def _problem(status: int, code: str, message: str, **extra: Any) -> JSONResponse
     return JSONResponse({"error": {"code": code, "message": message, **extra}}, status_code=status)
 
 
-def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
+def create_app(jobs: JobManager, auth: TokenAuth, policy: Policy) -> Starlette:
     def authed(handler: Handler) -> Callable[[Request], Awaitable[Response]]:
         async def wrapper(request: Request) -> Response:
             principal = auth.authenticate(request.headers.get("authorization"))
@@ -42,7 +43,8 @@ def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
         except ValueError:
             return None
 
-    async def submit(request: Request, principal: Principal) -> Response:
+    async def admit(request: Request, principal: Principal) -> JobRecord | Response:
+        """Validate, narrow and admit a job; a Response means it was refused."""
         body = await request.body()
         if len(body) > MAX_BODY_BYTES:
             return _problem(413, "request_too_large", f"body exceeds {MAX_BODY_BYTES} bytes")
@@ -60,10 +62,18 @@ def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
                 allowed=sorted(principal.profiles),
                 hint="use GET /v1/profiles",
             )
+        # Same narrow() as the supervisor (crates/nsbx-policy via PyO3). The
+        # supervisor re-checks; this gives the agent the denial immediately.
+        try:
+            policy.narrow(principal.policy_json(), json.dumps(req.policy_request()))
+        except PolicyDenied as e:
+            denial = json.loads(e.args[0])
+            message = f"{denial['field']}: {denial['hint']}"
+            return JSONResponse({"error": {"category": "policy", "message": message, **denial}}, status_code=422)
         if not jobs.connected:
             return _problem(503, "supervisor_unavailable", "the sandbox supervisor is not connected", retryable=True)
         try:
-            rec = await jobs.submit(principal.id, req)
+            return await jobs.submit(principal.id, req)
         except Busy:
             return JSONResponse(
                 {"error": {"code": "busy", "message": "admission queue is full", "retryable": True}},
@@ -72,7 +82,25 @@ def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
             )
         except Conflict:
             return _problem(409, "idempotency_conflict", "job_id already used with a different request")
+
+    def sse(rec: JobRecord) -> StreamingResponse:
+        async def stream() -> AsyncIterator[bytes]:
+            yield f"event: job\ndata: {json.dumps({'job_id': str(rec.job_id)})}\n\n".encode()
+            async for ev in jobs.events(rec):
+                yield f"event: {ev.kind}\ndata: {json.dumps(ev.data)}\n\n".encode()
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+    async def submit(request: Request, principal: Principal) -> Response:
+        rec = await admit(request, principal)
+        if isinstance(rec, Response):
+            return rec
         return JSONResponse(rec.view().model_dump(mode="json"), status_code=202)
+
+    async def run(request: Request, principal: Principal) -> Response:
+        """Submit and stream in one call."""
+        rec = await admit(request, principal)
+        return rec if isinstance(rec, Response) else sse(rec)
 
     async def get_job(request: Request, principal: Principal) -> Response:
         jid = job_id_of(request)
@@ -93,16 +121,19 @@ def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
         rec = jobs.get(principal.id, jid) if jid else None
         if rec is None:
             return _problem(404, "not_found", "no such job")
+        return sse(rec)
 
-        async def stream() -> AsyncIterator[bytes]:
-            async for ev in jobs.events(rec):
-                yield f"event: {ev.kind}\ndata: {json.dumps(ev.data)}\n\n".encode()
-
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+    def visible_profiles(principal: Principal) -> set[str]:
+        return set(principal.profiles) & set(jobs.profiles) & set(policy.profile_names())
 
     async def profiles(request: Request, principal: Principal) -> Response:
-        offered = set(jobs.profiles)
-        return JSONResponse({"profiles": sorted(principal.profiles & offered)})
+        return JSONResponse({"profiles": sorted(visible_profiles(principal))})
+
+    async def environment(request: Request, principal: Principal) -> Response:
+        name = request.path_params["name"]
+        if name not in visible_profiles(principal):
+            return _problem(404, "not_found", "no such profile for this principal")
+        return JSONResponse(json.loads(policy.environment(name)))
 
     async def health(request: Request) -> Response:
         status = 200 if jobs.connected else 503
@@ -111,10 +142,12 @@ def create_app(jobs: JobManager, auth: TokenAuth) -> Starlette:
     return Starlette(
         routes=[
             Route("/v1/jobs", authed(submit), methods=["POST"]),
+            Route("/v1/run", authed(run), methods=["POST"]),
             Route("/v1/jobs/{job_id}", authed(get_job), methods=["GET"]),
             Route("/v1/jobs/{job_id}/cancel", authed(cancel), methods=["POST"]),
             Route("/v1/jobs/{job_id}/events", authed(events), methods=["GET"]),
             Route("/v1/profiles", authed(profiles), methods=["GET"]),
+            Route("/v1/profiles/{name}/environment", authed(environment), methods=["GET"]),
             Route("/v1/health", health, methods=["GET"]),
         ]
     )

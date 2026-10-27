@@ -447,32 +447,51 @@ pub fn narrow(
     })
 }
 
-/// One numeric limit: the requested value if it is within `allowed`, else
-/// `default` (already clamped to `allowed` by the caller).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LimitViolation {
+    Zero,
+    Exceeds,
+}
+
+/// One numeric limit, without allocation so it can be model-checked: the
+/// requested value if it is within `allowed`, else `default` clamped to
+/// `allowed`.
+pub(crate) fn decide_limit(
+    requested: Option<u64>,
+    allowed: u64,
+    default: u64,
+) -> Result<u64, LimitViolation> {
+    match requested {
+        Some(0) => Err(LimitViolation::Zero),
+        Some(r) if r > allowed => Err(LimitViolation::Exceeds),
+        Some(r) => Ok(r),
+        None => Ok(default.min(allowed)),
+    }
+}
+
+/// `decide_limit` plus a structured denial for the agent.
 pub(crate) fn pick_limit(
     field: &'static str,
     requested: Option<u64>,
     allowed: u64,
     default: u64,
 ) -> Result<u64, Denial> {
-    match requested {
-        Some(0) => Err(deny(
+    decide_limit(requested, allowed, default).map_err(|v| match v {
+        LimitViolation::Zero => deny(
             "limit_zero",
             format!("limits.{field}"),
             Some("0".into()),
             Some(allowed.to_string()),
             "limits must be greater than zero",
-        )),
-        Some(r) if r > allowed => Err(deny(
+        ),
+        LimitViolation::Exceeds => deny(
             "limit_exceeds_allowed",
             format!("limits.{field}"),
-            Some(r.to_string()),
+            requested.map(|r| r.to_string()),
             Some(allowed.to_string()),
             format!("request at most {allowed}"),
-        )),
-        Some(r) => Ok(r),
-        None => Ok(default.min(allowed)),
-    }
+        ),
+    })
 }
 
 impl Effective {
@@ -530,20 +549,20 @@ mod proofs {
     use super::*;
 
     /// For every profile limit, principal cap, profile default and requested
-    /// value, an accepted limit never exceeds the profile, the cap or the request.
+    /// value, an accepted limit is positive (when requested) and never exceeds
+    /// the profile, the principal's cap or the request.
     #[kani::proof]
-    #[kani::unwind(2)]
-    fn pick_limit_is_narrow_only() {
+    fn decide_limit_is_narrow_only() {
         let profile: u64 = kani::any();
         let cap: Option<u64> = kani::any();
         let default: Option<u64> = kani::any();
         let requested: Option<u64> = kani::any();
         let allowed = cap.map_or(profile, |c| c.min(profile));
         let dflt = default.map_or(profile, |d| d.min(profile));
-        if let Ok(v) = pick_limit("x", requested, allowed, dflt) {
+        if let Ok(v) = decide_limit(requested, allowed, dflt) {
             assert!(v <= profile);
             assert!(cap.is_none_or(|c| v <= c));
-            assert!(requested.is_none_or(|r| v == r));
+            assert!(requested.is_none_or(|r| v == r && r > 0));
         }
     }
 }

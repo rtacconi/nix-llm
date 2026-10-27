@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "nsbx-policy"
+version = "0.1.0"
+description = "NixSandbox policy narrowing, shared with the Rust supervisor"
+requires-python = ">=3.12"
+
+[tool.maturin]
+features = ["extension-module"]

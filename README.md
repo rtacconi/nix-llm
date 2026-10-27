@@ -27,13 +27,13 @@ three parts:
 
 | Component | Path | Status |
 |-----------|------|--------|
-| `nsbx/1` protocol codec and messages | [crates/nsbx-proto](crates/nsbx-proto) | Done: frame codec, JSON and binary payloads, property tests, Kani harness (not yet run in CI) |
-| Policy: profiles, `narrow()`, paths, seccomp sources | [crates/nsbx-policy](crates/nsbx-policy) | Done: narrow-only on every field with structured denials, write-back guard, seccomp source resolution with mandatory kill list. Property test checks `effective ⊆ request ⊆ principal ⊆ profile` over 2,000 cases. BPF compilation is Linux-only and not started |
+| `nsbx/1` protocol codec and messages | [crates/nsbx-proto](crates/nsbx-proto) | Done: frame codec, JSON and binary payloads, property tests; Kani proves the decoder never panics or over-reads (8-byte bound) |
+| Policy: profiles, `narrow()`, paths, seccomp sources | [crates/nsbx-policy](crates/nsbx-policy) | Done: narrow-only on every field with structured denials, write-back guard, seccomp source resolution with mandatory kill list. Property test checks `effective ⊆ request ⊆ principal ⊆ profile` over 2,000 cases, and Kani proves the numeric limit decision is narrow-only for all u64 inputs. BPF compilation is Linux-only and not started |
 | Lifecycle core | [crates/nsbx-core](crates/nsbx-core) | Done: job state machine, UID slot allocator with quarantine, effect epochs; property-tested |
 | Admin policy files | [policy/](policy) | `python-compute` and `cli-text` profiles; `base`, `python`, `node`, `cli` seccomp sources |
-| Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API, auth, principal scoping, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
+| PyO3 binding for `narrow()` | [crates/nsbx-pyo3](crates/nsbx-pyo3) | Done: the orchestrator and the supervisor narrow with the same Rust code. Built by maturin through Nix, with type stubs |
+| Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API incl. `/v1/run` and `/v1/profiles/{name}/environment`, auth, principal caps, policy denials (422) from the shared `narrow()`, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
 | Supervisor, stage 2, idmap, warden | — | Not started (Linux) |
-| PyO3 binding for `narrow()` | — | Not started; the orchestrator relies on the supervisor's narrowing until then |
 
 ## Development
 
@@ -47,3 +47,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 (cd python && pytest && mypy && ruff check .)
 nix flake check             # everything above, built by Nix
 ```
+
+The dev shell's Python includes the compiled `nsbx_policy` binding; re-enter
+the shell after changing `crates/nsbx-policy` or `crates/nsbx-pyo3`.
+
+### Kani proofs
+
+Kani is not in nixpkgs. Install it once with
+`cargo install --locked kani-verifier && cargo kani setup`, then run
+`cargo kani -p nsbx-proto` and `cargo kani -p nsbx-policy`.

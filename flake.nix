@@ -14,10 +14,42 @@
       ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # Rust sources shared by the Rust workspace and the Python binding.
+      rustSrc =
+        pkgs:
+        pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./clippy.toml
+            ./crates
+            ./policy
+          ];
+        };
+
+      # nsbx_policy: the Rust narrow() as a Python extension (maturin).
+      nsbxPolicyPy =
+        pkgs: ps:
+        ps.buildPythonPackage {
+          pname = "nsbx-policy";
+          version = "0.1.0";
+          pyproject = true;
+          src = rustSrc pkgs;
+          buildAndTestSubdir = "crates/nsbx-pyo3";
+          cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+          nativeBuildInputs = [
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.rustPlatform.maturinBuildHook
+          ];
+          pythonImportsCheck = [ "nsbx_policy" ];
+        };
+
       pythonFor =
         pkgs:
         pkgs.python312.withPackages (
           ps: with ps; [
+            (nsbxPolicyPy pkgs ps)
             pydantic
             starlette
             uvicorn
@@ -34,19 +66,10 @@
         pkgs.rustPlatform.buildRustPackage {
           pname = "nsbx";
           version = "0.1.0";
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./clippy.toml
-              ./crates
-              ./policy
-            ];
-          };
+          src = rustSrc pkgs;
           cargoLock.lockFile = ./Cargo.lock;
-          # Linux-only crates (supervisor, stage 2, idmap, warden) are not in the
-          # workspace yet; everything here builds and tests on any platform.
+          # Builds the default workspace members; the Python binding is built
+          # separately by maturin (nsbxPolicyPy).
           doCheck = true;
         };
     in
@@ -68,7 +91,7 @@
               ];
             }
             ''
-              cp -r ${./python} python && chmod -R u+w python && cd python
+              cp -r ${./python} python && cp -r ${./policy} policy && chmod -R u+w python policy && cd python
               ruff check .
               mypy
               pytest -q

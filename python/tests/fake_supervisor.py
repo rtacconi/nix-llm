@@ -96,7 +96,7 @@ class FakeSupervisor:
         jid = uuid.UUID(job_id)
         req = msg["request"]
         mode = req["argv"][-1]
-        if req["profile"] == "deny":
+        if mode == "reject":
             await send_json(
                 FrameType.REJECTED,
                 {

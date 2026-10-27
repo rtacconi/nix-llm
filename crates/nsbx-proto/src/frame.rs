@@ -51,7 +51,24 @@ impl FrameType {
     ];
 
     pub fn from_u8(b: u8) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| *t as u8 == b)
+        Some(match b {
+            0x01 => Self::Hello,
+            0x02 => Self::HelloAck,
+            0x10 => Self::Submit,
+            0x11 => Self::Accepted,
+            0x12 => Self::Rejected,
+            0x13 => Self::Started,
+            0x20 => Self::Output,
+            0x21 => Self::Credit,
+            0x30 => Self::Cancel,
+            0x31 => Self::Exited,
+            0x32 => Self::Artifact,
+            0x33 => Self::PolicyEvent,
+            0x40 => Self::Ping,
+            0x41 => Self::Pong,
+            0x7F => Self::Error,
+            _ => return None,
+        })
     }
 
     /// Frames carrying a JSON object payload; all others are binary.
@@ -132,6 +149,17 @@ mod tests {
             encode(ty, b"abc", &mut buf).unwrap();
             let (f, n) = decode(&buf).unwrap().unwrap();
             assert_eq!((f.ty, f.payload, n), (ty, &b"abc"[..], buf.len()));
+        }
+    }
+
+    #[test]
+    fn from_u8_matches_discriminants() {
+        for ty in FrameType::ALL {
+            assert_eq!(FrameType::from_u8(ty as u8), Some(ty));
+        }
+        let known: Vec<u8> = FrameType::ALL.iter().map(|t| *t as u8).collect();
+        for b in 0..=u8::MAX {
+            assert_eq!(FrameType::from_u8(b).is_some(), known.contains(&b));
         }
     }
 

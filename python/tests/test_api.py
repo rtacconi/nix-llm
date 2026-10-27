@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import shutil
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from nsbx_policy import Policy
 
 from nsbx_orchestrator.app import create_app
 from nsbx_orchestrator.auth import Principal, TokenAuth
@@ -21,6 +24,7 @@ from nsbx_orchestrator.supervisor import SupervisorClient
 
 from .fake_supervisor import WINDOW, FakeSupervisor
 
+PROFILES_DIR = str(Path(__file__).resolve().parents[2] / "policy" / "profiles")
 TOKEN_A = "token-a"
 TOKEN_B = "token-b"
 
@@ -42,18 +46,19 @@ async def env() -> AsyncIterator[Env]:
     # macOS limits Unix socket paths to ~104 bytes, so avoid long tmp dirs.
     d = tempfile.mkdtemp(prefix="nsbx", dir="/tmp")
     path = f"{d}/s.sock"
-    sup = FakeSupervisor(["python-compute", "cli-text", "deny"])
+    sup = FakeSupervisor(["python-compute", "cli-text"])
     await sup.start(path)
     client = SupervisorClient(path)
     jobs = JobManager(client, max_running=2, max_queued=2, output_keep_bytes=64 * 1024, deadline_slack_s=0.5)
     await jobs.start()
     auth = TokenAuth(
         {
-            TokenAuth.digest(TOKEN_A): Principal("agent-a", frozenset({"python-compute", "deny"})),
-            TokenAuth.digest(TOKEN_B): Principal("agent-b", frozenset({"python-compute"})),
+            TokenAuth.digest(TOKEN_A): Principal("agent-a", frozenset({"python-compute"})),
+            TokenAuth.digest(TOKEN_B): Principal("agent-b", frozenset({"python-compute"}), limits={"wall_ms": 5_000}),
         }
     )
-    transport = httpx.ASGITransport(app=create_app(jobs, auth))
+    policy = Policy.from_dir(PROFILES_DIR)
+    transport = httpx.ASGITransport(app=create_app(jobs, auth, policy))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
         yield Env(http, sup, jobs)
     await client.close()
@@ -113,12 +118,12 @@ async def test_schema_errors_are_structured(env: Env) -> None:
 async def test_profile_not_allowed_names_alternatives(env: Env) -> None:
     r = await env.http.post("/v1/jobs", json=job(profile="cli-text"), headers=hdr())
     assert r.status_code == 403
-    assert r.json()["error"]["allowed"] == ["deny", "python-compute"]
+    assert r.json()["error"]["allowed"] == ["python-compute"]
 
 
 @pytest.mark.anyio
 async def test_supervisor_rejection_is_passed_through(env: Env) -> None:
-    r = await env.http.post("/v1/jobs", json=job(profile="deny"), headers=hdr())
+    r = await env.http.post("/v1/jobs", json=job(argv=["python3", "reject"]), headers=hdr())
     v = await wait_terminal(env, r.json()["job_id"])
     assert v["state"] == "rejected"
     assert v["error"]["field"] == "limits.memory_bytes"
@@ -213,7 +218,7 @@ async def test_sse_stream_replays_and_ends_with_exit(env: Env) -> None:
     s = await env.http.get(f"/v1/jobs/{jid}/events", headers=hdr())
     assert s.headers["content-type"].startswith("text/event-stream")
     kinds = [line.split(": ", 1)[1] for line in s.text.splitlines() if line.startswith("event: ")]
-    assert kinds == ["stdout", "stderr", "exit"]
+    assert kinds == ["job", "stdout", "stderr", "exit"]
 
 
 @pytest.mark.anyio
@@ -227,3 +232,54 @@ async def test_inline_input_limit(env: Env) -> None:
 async def test_profiles_are_filtered_per_principal(env: Env) -> None:
     r = await env.http.get("/v1/profiles", headers=hdr(TOKEN_B))
     assert r.json() == {"profiles": ["python-compute"]}
+
+
+@pytest.mark.anyio
+async def test_policy_denials_come_from_the_shared_narrow(env: Env) -> None:
+    cases = [
+        (job(limits={"memory_bytes": 1 << 40}), "limit_exceeds_allowed", "limits.memory_bytes"),
+        (job(argv=["sh", "-c", "true"]), "executable_not_in_runtime", "argv[0]"),
+        (job(env={"LD_PRELOAD": "x"}), "env_key_not_allowed", "env.LD_PRELOAD"),
+        (job(network="egress-proxy"), "network_not_allowed", "network"),
+        (job(collect=["../x"]), "path_invalid", "collect[0]"),
+    ]
+    for body, code, field in cases:
+        r = await env.http.post("/v1/jobs", json=body, headers=hdr())
+        assert r.status_code == 422, body
+        err = r.json()["error"]
+        assert (err["code"], err["field"]) == (code, field)
+        assert err["hint"]
+    assert env.sup.submits == []  # nothing denied ever reaches the supervisor
+
+
+@pytest.mark.anyio
+async def test_principal_caps_narrow_the_profile(env: Env) -> None:
+    r = await env.http.post("/v1/jobs", json=job(limits={"wall_ms": 10_000}), headers=hdr(TOKEN_B))
+    assert r.status_code == 422
+    assert r.json()["error"]["allowed"] == "5000"
+    ok = await env.http.post("/v1/jobs", json=job(limits={"wall_ms": 10_000}), headers=hdr(TOKEN_A))
+    assert ok.status_code == 202
+
+
+@pytest.mark.anyio
+async def test_environment_endpoint(env: Env) -> None:
+    r = await env.http.get("/v1/profiles/python-compute/environment", headers=hdr())
+    assert r.status_code == 200
+    e = r.json()
+    assert e["executables"] == ["python3"]
+    assert e["network"]["mode"] == "none"
+    assert e["filesystem"]["workdir"] == "/workspace"
+    assert (await env.http.get("/v1/profiles/cli-text/environment", headers=hdr())).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_run_submits_and_streams(env: Env) -> None:
+    r = await env.http.post("/v1/run", json=job(), headers=hdr())
+    assert r.headers["content-type"].startswith("text/event-stream")
+    events = [line.split(": ", 1)[1] for line in r.text.splitlines() if line.startswith("event: ")]
+    assert events[0] == "job" and events[-1] == "exit"
+    assert "stdout" in events
+    exit_data = json.loads(r.text.strip().splitlines()[-1].removeprefix("data: "))
+    assert exit_data["state"] == "exited"
+    denied = await env.http.post("/v1/run", json=job(argv=["sh"]), headers=hdr())
+    assert denied.status_code == 422

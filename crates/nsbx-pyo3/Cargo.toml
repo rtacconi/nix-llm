@@ -1,0 +1,30 @@
+[package]
+name = "nsbx-pyo3"
+description = "Python binding for nsbx-policy: the orchestrator calls the same narrow() as the supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "nsbx_policy"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enabled by maturin only, so `cargo test` can link the crate normally.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+nsbx-policy = { path = "../nsbx-policy" }
+pyo3 = { version = "0.30", features = ["abi3-py312"] }
+serde_json.workspace = true
+toml.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.30"
+
+# PyO3's macros expand to `unsafe` code, so this crate cannot inherit the
+# workspace-wide `forbid(unsafe_code)`. It contains no hand-written unsafe.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
