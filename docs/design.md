@@ -945,7 +945,7 @@ connections.
 | 0x30 / 0x31 | Cancel / Exited | C→S / S→C |
 | 0x32 | Artifact (binary) | S→C |
 | 0x33 | PolicyEvent (egress decision, limit hit, cancel ack) | S→C |
-| 0x40 | Ping/Pong | both |
+| 0x40 / 0x41 | Ping / Pong (8-byte nonce) | both |
 | 0x7F | Error, then close | S→C |
 
 **Rules:**

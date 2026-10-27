@@ -1,0 +1,350 @@
+# Seccomp profile source. Every allowed syscall needs a written reason.
+# See docs/design.md §8. Derived lists are confirmed by the conformance trace (§9.1).
+name = "base"
+version = "1.0.0"
+
+[[allow]]
+name = "read"
+reason = "read from files, pipes and sockets"
+
+[[allow]]
+name = "write"
+reason = "write to files, pipes and sockets"
+
+[[allow]]
+name = "readv"
+reason = "vectored reads (libc stdio)"
+
+[[allow]]
+name = "writev"
+reason = "vectored writes (libc stdio)"
+
+[[allow]]
+name = "pread64"
+reason = "positioned reads (zip, sqlite)"
+
+[[allow]]
+name = "pwrite64"
+reason = "positioned writes"
+
+[[allow]]
+name = "openat"
+reason = "open files; reach limited by the mount view and Landlock"
+
+[[allow]]
+name = "close"
+reason = "release descriptors"
+
+[[allow]]
+name = "fstat"
+reason = "stat an open descriptor"
+
+[[allow]]
+name = "newfstatat"
+reason = "stat by path (glibc stat wrappers)"
+
+[[allow]]
+name = "statx"
+reason = "stat by path (newer glibc)"
+
+[[allow]]
+name = "lseek"
+reason = "seek in files"
+
+[[allow]]
+name = "mmap"
+reason = "memory allocation and file mapping"
+
+[[allow]]
+name = "munmap"
+reason = "release mappings"
+
+[[allow]]
+name = "mprotect"
+reason = "change mapping protection (loaders, JITs)"
+
+[[allow]]
+name = "mremap"
+reason = "grow mappings (realloc)"
+
+[[allow]]
+name = "madvise"
+reason = "memory hints from allocators"
+
+[[allow]]
+name = "brk"
+reason = "heap growth"
+
+[[allow]]
+name = "rt_sigaction"
+reason = "install signal handlers"
+
+[[allow]]
+name = "rt_sigprocmask"
+reason = "mask signals"
+
+[[allow]]
+name = "rt_sigreturn"
+reason = "return from signal handlers"
+
+[[allow]]
+name = "sigaltstack"
+reason = "alternate signal stack (stack overflow handling)"
+
+[[allow]]
+name = "fcntl"
+reason = "descriptor flags and locks"
+
+[[allow]]
+name = "dup"
+reason = "duplicate descriptors"
+
+[[allow]]
+name = "dup3"
+reason = "duplicate descriptors with flags"
+
+[[allow]]
+name = "pipe2"
+reason = "create pipes"
+
+[[allow]]
+name = "getpid"
+reason = "process identity"
+
+[[allow]]
+name = "getppid"
+reason = "process identity"
+
+[[allow]]
+name = "gettid"
+reason = "thread identity"
+
+[[allow]]
+name = "getuid"
+reason = "credential queries"
+
+[[allow]]
+name = "geteuid"
+reason = "credential queries"
+
+[[allow]]
+name = "getgid"
+reason = "credential queries"
+
+[[allow]]
+name = "getegid"
+reason = "credential queries"
+
+[[allow]]
+name = "getgroups"
+reason = "credential queries"
+
+[[allow]]
+name = "getresuid"
+reason = "credential queries"
+
+[[allow]]
+name = "getresgid"
+reason = "credential queries"
+
+[[allow]]
+name = "getcwd"
+reason = "current directory"
+
+[[allow]]
+name = "chdir"
+reason = "change directory"
+
+[[allow]]
+name = "fchdir"
+reason = "change directory by descriptor"
+
+[[allow]]
+name = "uname"
+reason = "system identification (kernel release is a documented leak)"
+
+[[allow]]
+name = "readlinkat"
+reason = "resolve symlinks"
+
+[[allow]]
+name = "getdents64"
+reason = "list directories"
+
+[[allow]]
+name = "faccessat"
+reason = "access checks"
+
+[[allow]]
+name = "faccessat2"
+reason = "access checks (newer glibc)"
+
+[[allow]]
+name = "futex"
+reason = "thread synchronisation"
+
+[[allow]]
+name = "set_robust_list"
+reason = "thread start-up (glibc)"
+
+[[allow]]
+name = "get_robust_list"
+reason = "thread state queries"
+
+[[allow]]
+name = "set_tid_address"
+reason = "thread start-up (glibc)"
+
+[[allow]]
+name = "rseq"
+reason = "restartable sequences (glibc 2.35+)"
+
+[[allow]]
+name = "sched_yield"
+reason = "yield CPU"
+
+[[allow]]
+name = "sched_getaffinity"
+reason = "CPU count detection"
+
+[[allow]]
+name = "clock_gettime"
+reason = "time"
+
+[[allow]]
+name = "clock_getres"
+reason = "time resolution"
+
+[[allow]]
+name = "clock_nanosleep"
+reason = "sleep"
+
+[[allow]]
+name = "nanosleep"
+reason = "sleep"
+
+[[allow]]
+name = "gettimeofday"
+reason = "time (legacy callers)"
+
+[[allow]]
+name = "getrandom"
+reason = "randomness for hashing and crypto"
+
+[[allow]]
+name = "exit"
+reason = "thread exit"
+
+[[allow]]
+name = "exit_group"
+reason = "process exit"
+
+[[allow]]
+name = "wait4"
+reason = "reap children"
+
+[[allow]]
+name = "waitid"
+reason = "reap children"
+
+[[allow]]
+name = "kill"
+reason = "signal own processes; scoped by the pid namespace"
+
+[[allow]]
+name = "tgkill"
+reason = "signal own threads"
+
+[[allow]]
+name = "execve"
+reason = "run programs from the runtime; reach limited by Landlock EXECUTE"
+
+[[allow]]
+name = "ppoll"
+reason = "wait on descriptors"
+
+[[allow]]
+name = "pselect6"
+reason = "wait on descriptors"
+
+[[allow]]
+name = "epoll_create1"
+reason = "event loops"
+
+[[allow]]
+name = "epoll_ctl"
+reason = "event loops"
+
+[[allow]]
+name = "epoll_pwait"
+reason = "event loops"
+
+[[allow]]
+name = "eventfd2"
+reason = "event loop wake-ups"
+
+[[allow]]
+name = "getrusage"
+reason = "resource usage queries"
+
+[[allow]]
+name = "sysinfo"
+reason = "memory queries by runtimes"
+
+[[allow]]
+name = "umask"
+reason = "file mode mask"
+
+[[allow]]
+name = "mkdirat"
+reason = "create directories"
+
+[[allow]]
+name = "unlinkat"
+reason = "remove files"
+
+[[allow]]
+name = "renameat2"
+reason = "rename files"
+
+[[allow]]
+name = "ftruncate"
+reason = "truncate files"
+
+[[allow]]
+name = "fsync"
+reason = "flush files"
+
+[[allow]]
+name = "fdatasync"
+reason = "flush file data"
+
+[[allow]]
+name = "clone"
+reason = "threads and fork; namespace flags denied"
+constraint = "no_namespace_flags"
+
+[[allow]]
+name = "ioctl"
+reason = "terminal and descriptor queries only"
+constraint = "ioctl_safe_set"
+
+[[allow]]
+name = "prctl"
+reason = "thread names and dumpable queries only"
+constraint = "prctl_safe_set"
+
+[[allow]]
+name = "personality"
+reason = "query only"
+constraint = "personality_query"
+
+[[allow]]
+name = "prlimit64"
+reason = "read limits only"
+constraint = "prlimit_get_only"
+
+[[allow]]
+name = "arch_prctl"
+reason = "thread-local storage set-up on x86_64"
+arch = "x86_64"

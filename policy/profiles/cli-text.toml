@@ -1,0 +1,36 @@
+# Admin profile: text-processing CLI tools, no interpreters, no network.
+name = "cli-text"
+version = "1.0.0"
+backend = "namespace"
+seccomp = "cli"
+executables = ["cat", "cut", "grep", "head", "jq", "ls", "sed", "sort", "tail", "tr", "uniq", "wc"]
+proc = "subset"
+workspace_exec = false
+env_allow = ["LANG", "LC_ALL", "TZ"]
+collect_prefixes = ["out"]
+write_back = "flag"
+
+[limits]
+wall_ms = 30_000
+cpu_ms = 15_000
+memory_bytes = 268_435_456
+pids = 32
+output_bytes = 1_048_576
+
+[cpu]
+quota_us = 50_000
+period_us = 100_000
+
+[storage]
+workspace_bytes = 67_108_864
+tmp_bytes = 16_777_216
+shm_bytes = 1_048_576
+headroom_bytes = 67_108_864
+
+[network]
+mode = "none"
+
+[io]
+input_bytes_max = 8_388_608
+artifact_bytes_max = 8_388_608
+grace_max_ms = 2_000

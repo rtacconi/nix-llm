@@ -1,0 +1,41 @@
+# Admin profile: Python computation with no shell, no network, no compilers.
+# See docs/design.md §9.2 (capability-shaped runtimes) and §10.2 (limits).
+name = "python-compute"
+version = "1.0.0"
+backend = "namespace"
+seccomp = "python"
+executables = ["python3"]
+proc = "subset"
+workspace_exec = false
+env_allow = ["PYTHONUNBUFFERED", "PYTHONHASHSEED", "PYTHONDONTWRITEBYTECODE", "TZ", "LANG"]
+collect_prefixes = ["out"]
+write_back = "refuse"
+
+[limits]
+wall_ms = 60_000
+cpu_ms = 30_000
+memory_bytes = 536_870_912   # 512 MiB
+pids = 128
+output_bytes = 1_048_576     # 1 MiB
+
+[defaults]
+wall_ms = 30_000
+cpu_ms = 15_000
+
+[cpu]
+quota_us = 100_000
+period_us = 100_000
+
+[storage]
+workspace_bytes = 134_217_728  # 128 MiB
+tmp_bytes = 33_554_432         # 32 MiB
+shm_bytes = 33_554_432         # 32 MiB
+headroom_bytes = 268_435_456   # 256 MiB
+
+[network]
+mode = "none"
+
+[io]
+input_bytes_max = 8_388_608
+artifact_bytes_max = 8_388_608
+grace_max_ms = 5_000

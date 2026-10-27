@@ -1,0 +1,49 @@
+# Seccomp profile source. Every allowed syscall needs a written reason.
+# See docs/design.md §8. Derived lists are confirmed by the conformance trace (§9.1).
+name = "cli"
+version = "1.0.0"
+extends = "base"
+
+[[allow]]
+name = "fchmodat"
+reason = "chmod in the workspace"
+
+[[allow]]
+name = "fchownat"
+reason = "chown within mapped IDs"
+
+[[allow]]
+name = "linkat"
+reason = "hard links"
+
+[[allow]]
+name = "symlinkat"
+reason = "symbolic links"
+
+[[allow]]
+name = "utimensat"
+reason = "set file times (touch)"
+
+[[allow]]
+name = "copy_file_range"
+reason = "in-kernel file copies (cp)"
+
+[[allow]]
+name = "sendfile"
+reason = "cp and cat fast paths"
+
+[[allow]]
+name = "fallocate"
+reason = "preallocate files"
+
+[[allow]]
+name = "flock"
+reason = "file locks"
+
+[[allow]]
+name = "statfs"
+reason = "df-style queries"
+
+[[allow]]
+name = "fstatfs"
+reason = "filesystem queries"

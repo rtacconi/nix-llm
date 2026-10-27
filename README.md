@@ -7,7 +7,7 @@ three parts:
 - immutable runtimes, each built with Nix together with its own security policy;
 - an asyncio Python service that agents call.
 
-**Status:** the design is complete; implementation starts at milestone M0.
+**Status:** the design is complete. The platform-neutral core is implemented (see below); the Linux kernel-facing parts (supervisor, stage 2, idmap, warden) are next and need a Linux host.
 
 ## Documents
 
@@ -22,3 +22,28 @@ three parts:
 - The runtime needs Linux 6.6 or newer.
 - On macOS you can edit the code and run the platform-neutral unit tests.
 - Integration and security tests need a Linux host or a NixOS VM with KVM.
+
+## What is implemented
+
+| Component | Path | Status |
+|-----------|------|--------|
+| `nsbx/1` protocol codec and messages | [crates/nsbx-proto](crates/nsbx-proto) | Done: frame codec, JSON and binary payloads, property tests, Kani harness (not yet run in CI) |
+| Policy: profiles, `narrow()`, paths, seccomp sources | [crates/nsbx-policy](crates/nsbx-policy) | Done: narrow-only on every field with structured denials, write-back guard, seccomp source resolution with mandatory kill list. Property test checks `effective ⊆ request ⊆ principal ⊆ profile` over 2,000 cases. BPF compilation is Linux-only and not started |
+| Lifecycle core | [crates/nsbx-core](crates/nsbx-core) | Done: job state machine, UID slot allocator with quarantine, effect epochs; property-tested |
+| Admin policy files | [policy/](policy) | `python-compute` and `cli-text` profiles; `base`, `python`, `node`, `cli` seccomp sources |
+| Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API, auth, principal scoping, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
+| Supervisor, stage 2, idmap, warden | — | Not started (Linux) |
+| PyO3 binding for `narrow()` | — | Not started; the orchestrator relies on the supervisor's narrowing until then |
+
+## Development
+
+Flakes need `--extra-experimental-features 'nix-command flakes'` unless they are
+enabled in your Nix config.
+
+```sh
+nix develop                 # Rust toolchain, Python 3.12, ruff, mypy, cargo-deny
+cargo test --workspace      # Rust unit and property tests
+cargo clippy --workspace --all-targets -- -D warnings
+(cd python && pytest && mypy && ruff check .)
+nix flake check             # everything above, built by Nix
+```

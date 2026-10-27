@@ -1,0 +1,23 @@
+# Seccomp profile source. Every allowed syscall needs a written reason.
+# See docs/design.md §8. Derived lists are confirmed by the conformance trace (§9.1).
+name = "node"
+version = "1.0.0"
+extends = "python"
+# libuv probes io_uring at start-up and falls back on ENOSYS (design §8.1).
+enosys = ["io_uring_setup", "io_uring_enter", "io_uring_register"]
+
+[[allow]]
+name = "memfd_create"
+reason = "V8 code space and shared memory"
+
+[[allow]]
+name = "pkey_alloc"
+reason = "V8 probes memory protection keys; failure is handled"
+
+[[allow]]
+name = "pkey_mprotect"
+reason = "V8 memory protection keys"
+
+[[allow]]
+name = "pkey_free"
+reason = "V8 memory protection keys"

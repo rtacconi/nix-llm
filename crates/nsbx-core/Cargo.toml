@@ -1,0 +1,17 @@
+[package]
+name = "nsbx-core"
+description = "Platform-neutral job lifecycle: state machine, UID slots, effect epochs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nsbx-proto = { path = "../nsbx-proto" }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

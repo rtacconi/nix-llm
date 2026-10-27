@@ -5,3 +5,5 @@ target/
 .direnv/
 __pycache__/
 *.pyc
+.venv/
+*.so

@@ -1,0 +1,93 @@
+# Seccomp profile source. Every allowed syscall needs a written reason.
+# See docs/design.md §8. Derived lists are confirmed by the conformance trace (§9.1).
+name = "python"
+version = "1.0.0"
+extends = "base"
+
+[[allow]]
+name = "socket"
+reason = "Unix-domain sockets for local IPC"
+constraint = "socket_families"
+families = ["unix"]
+
+[[allow]]
+name = "socketpair"
+reason = "Unix-domain socket pairs for subprocess IPC"
+constraint = "socket_families"
+families = ["unix"]
+
+[[allow]]
+name = "connect"
+reason = "local IPC (multiprocessing managers)"
+
+[[allow]]
+name = "bind"
+reason = "local IPC"
+
+[[allow]]
+name = "listen"
+reason = "local IPC"
+
+[[allow]]
+name = "accept4"
+reason = "local IPC"
+
+[[allow]]
+name = "sendto"
+reason = "socket I/O"
+
+[[allow]]
+name = "recvfrom"
+reason = "socket I/O"
+
+[[allow]]
+name = "sendmsg"
+reason = "socket I/O incl. descriptor passing"
+
+[[allow]]
+name = "recvmsg"
+reason = "socket I/O"
+
+[[allow]]
+name = "getsockname"
+reason = "socket queries"
+
+[[allow]]
+name = "getpeername"
+reason = "socket queries"
+
+[[allow]]
+name = "setsockopt"
+reason = "socket options"
+
+[[allow]]
+name = "getsockopt"
+reason = "socket options"
+
+[[allow]]
+name = "shutdown"
+reason = "socket shutdown"
+
+[[allow]]
+name = "flock"
+reason = "file locks (pip caches, sqlite)"
+
+[[allow]]
+name = "statfs"
+reason = "filesystem queries"
+
+[[allow]]
+name = "fstatfs"
+reason = "filesystem queries"
+
+[[allow]]
+name = "utimensat"
+reason = "set file times"
+
+[[allow]]
+name = "fchmod"
+reason = "set file modes in the workspace"
+
+[[allow]]
+name = "fchmodat"
+reason = "set file modes in the workspace"

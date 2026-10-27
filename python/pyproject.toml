@@ -1,0 +1,30 @@
+[project]
+name = "nsbx-orchestrator"
+version = "0.1.0"
+description = "Agent-facing API for the NixSandbox execution sandbox"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2", "starlette", "uvicorn"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "TID"]
+ignore = ["S101"]  # assert is used for internal invariants
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess".msg = "the orchestrator never executes request content"
+"os.system".msg = "the orchestrator never executes request content"
+"pickle".msg = "untrusted deserialisation"
+"marshal".msg = "untrusted deserialisation"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.mypy]
+strict = true
+files = ["nsbx_orchestrator", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
