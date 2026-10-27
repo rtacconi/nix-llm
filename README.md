@@ -29,6 +29,7 @@ no implementation code yet. The prototype (Phase 4) starts at milestone M0 in
 | 13 | [Design review](docs/13-design-review.md) | Phase 2, 18 |
 | 14 | [Roadmap and open decisions](docs/14-roadmap.md) | 19, 20 |
 | 15 | [Literature review](docs/15-literature-review.md) | Findings from 19 papers on LLM-agent sandboxing, with design actions |
+| 16 | [Design improvements](docs/16-design-improvements.md) | New mechanisms N1–N8 (wardens, co-built policy, minimal runtimes, exposure map, pre-warmed pool, crash-only supervisor, replay, verified core) |
 | — | [Content safety rules](docs/content-safety.md) | Repo hygiene (AV false positives) |
 
 ## Platform

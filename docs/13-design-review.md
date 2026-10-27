@@ -43,6 +43,9 @@ forced into the design (or why it was accepted).
    supervisor binary only.
 3. **Supervisor parsing of sandbox-originated data** (status records, artefact
    frames). Mitigated by fixed-size records and bounded framing, and fuzzed.
+   **v2:** moved out of the supervisor into per-job, seccomp-confined wardens
+   ([16 N1](16-design-improvements.md#n1-per-job-warden-processes-privilege-separation-inside-the-supervisor)),
+   with Kani-proved decoders (N8).
 4. **Resource accounting gaps:** some kernel allocations are not charged to the
    job memcg, and there is cache and memory-bandwidth contention. Host-level
    `jobs/` caps limit the blast radius.

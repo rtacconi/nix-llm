@@ -34,6 +34,13 @@ the `node`/`build` profiles and networking stubbed).
 | E5 | Do Python 3.12, Node 22 and gcc run correctly with `clone3 → ENOSYS`, `proc subset=pid`, no `/sys`? | Conformance corpora |
 | E6 | `landlock` crate: exact API for a hard-requirement compatibility level; `rustix` coverage of `mount_setattr`/`open_tree`/`move_mount` | Read the crate docs and source at the pinned versions |
 
+## Design v2 additions
+
+Mechanisms N1–N8 and experiments E10–E13 are added to these milestones as listed in
+[16-design-improvements](16-design-improvements.md#changes-to-the-roadmap). The
+[literature review](15-literature-review.md#2-design-actions-for-nixsandbox) lists 23
+further traced actions, prioritised P1–P3.
+
 ## Prioritised open engineering decisions
 
 | P | ID | Decision | Options | Leaning | Needed by |

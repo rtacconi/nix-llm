@@ -51,6 +51,20 @@ agent ──HTTP──▶ orchestrator (Python, asyncio, untrusted-input parser,
 | Runtime | Nix closure, bind-mounted read-only path by path | Whole `/nix/store` bind; image file | The mount namespace is the primary boundary; startup cost is measured, not guessed |
 | Default network | Empty network namespace (loopback only) | Host network with filtering | Nothing to filter if nothing can be reached |
 
+## Design v2 additions
+
+[16-design-improvements](16-design-improvements.md) adds eight mechanisms built on the
+[literature review](15-literature-review.md):
+
+- **N1 per-job wardens:** the supervisor never parses sandbox bytes.
+- **N2 co-built policy:** runtime and seccomp/Landlock policy come from one Nix derivation.
+- **N3 capability-shaped runtimes:** minimal closures per task class.
+- **N4 kernel-exposure map:** CVE triage by profile and actual syscall usage.
+- **N5 pre-warmed single-use sandboxes.**
+- **N6 crash-only supervisor:** state rebuilt from cgroups and the systemd fd store.
+- **N7 reproducible forensic replay** in the microVM backend.
+- **N8 verified core:** Kani proofs of narrow-only, a stage-2 setup typestate, and a TLA+ lifecycle model.
+
 ## When the shared-kernel backend is acceptable
 
 See [01-threat-model.md](01-threat-model.md#shared-kernel-vs-microvm). In short,

@@ -28,7 +28,7 @@ quarantine, but never stops the remaining undo steps.
 | F20 | Control | Orchestrator disconnects | read EOF / error | Cancel the connection's jobs (fail closed); results kept for `result_ttl` for a reconnecting client | `cancelled` |
 | F21 | Control | Orchestrator sends garbage | codec | `Error` + close → F20 | `cancelled` |
 | F22 | Supervisor | Panic in a job task | `JoinError` | `panic = "abort"` in release: the whole supervisor dies and systemd kills all jobs (F23). Rationale: the state after a panic cannot be trusted | `supervisor_unavailable` |
-| F23 | Supervisor | Crash / OOM-kill / restart | systemd | `KillMode=control-group` kills everything. On start: sweep `jobs/*` (`cgroup.kill`, wait, `rmdir`), reset slots, log `supervisor.recovered` with counts | `supervisor_unavailable` |
+| F23 | Supervisor (see [16 N6](16-design-improvements.md#n6-crash-only-supervisor) for state rebuilt from kernel objects) | Crash / OOM-kill / restart | systemd | `KillMode=control-group` kills everything. On start: sweep `jobs/*` (`cgroup.kill`, wait, `rmdir`), reset slots, log `supervisor.recovered` with counts | `supervisor_unavailable` |
 | F24 | Host | Kernel lacks a feature after an upgrade or downgrade | startup detection | Refuse to start (required) or disable profiles (optional) | — |
 | F25 | Host | Supervisor cgroup itself near memory limit | `memory.events` of `supervisor/` | Stop admitting (`Busy`) before the kernel OOM-kills the supervisor | — |
 | F26 | idmap | Helper crashes | socket EOF | systemd restarts it; in-flight maps fail as F7 | `setup_failed{map}` |
