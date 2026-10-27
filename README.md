@@ -28,6 +28,7 @@ no implementation code yet. The prototype (Phase 4) starts at milestone M0 in
 | 12 | [Failure modes](docs/12-failure-modes.md) | 17 |
 | 13 | [Design review](docs/13-design-review.md) | Phase 2, 18 |
 | 14 | [Roadmap and open decisions](docs/14-roadmap.md) | 19, 20 |
+| 15 | [Literature review](docs/15-literature-review.md) | Findings from 19 papers on LLM-agent sandboxing, with design actions |
 | — | [Content safety rules](docs/content-safety.md) | Repo hygiene (AV false positives) |
 
 ## Platform
