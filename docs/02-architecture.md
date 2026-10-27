@@ -28,21 +28,21 @@ flowchart LR
     end
 
     subgraph Box["Sandbox (per job): NEWUSER NEWPID NEWNS NEWNET NEWIPC NEWUTS NEWCGROUP"]
-        S2[nsbx-stage2 → init (pid 1)<br/>ns-uid 0, own seccomp]
-        W[Workload (pid 2+)<br/>ns-uid 1000, no caps,<br/>NNP + Landlock + seccomp]
+        S2["nsbx-stage2 → init (pid 1)<br/>ns-uid 0, own seccomp"]
+        W["Workload (pid 2+)<br/>ns-uid 1000, no caps,<br/>NNP + Landlock + seccomp"]
     end
 
-    K[(Linux kernel<br/>cgroup v2, namespaces,<br/>LSM Landlock, seccomp)]
-    NIX[(/nix/store<br/>runtime closures, read-only)]
+    K[("Linux kernel<br/>cgroup v2, namespaces,<br/>LSM Landlock, seccomp")]
+    NIX[("/nix/store<br/>runtime closures, read-only")]
 
-    A -- HTTPS/HTTP --> API --> ADM --> JM --> SC
+    A -- "HTTPS/HTTP" --> API --> ADM --> JM --> SC
     SC -- "Unix socket /run/nixsandbox/sup.sock<br/>(trust boundary TB2)" --> PROTO
     PROTO --> POL --> CG --> SPAWN
     SPAWN -- "socketpair (TB3)" --> IDM
     SPAWN -- "clone3 CLONE_INTO_CGROUP" --> S2
-    S2 -- fork + exec --> W
-    MON -. pidfd / pipes / status fd (TB4) .- S2
-    W -. stdout/stderr pipes .-> MON
+    S2 -- "fork + exec" --> W
+    MON -. "pidfd / pipes / status fd (TB4)" .- S2
+    W -. "stdout/stderr pipes" .-> MON
     Box --- K
     NIX -- "ro,nosuid,nodev binds" --> Box
 ```
@@ -159,32 +159,32 @@ sequenceDiagram
 
     O->>S: Submit{job_id, profile, spec}
     S->>S: validate frame + schema + policy (narrow-only limits)
-    S->>K: mkdir jobs/job-<id>; write memory.max, memory.swap.max=0,<br/>memory.oom.group=1, pids.max, cpu.max; open dirfd
+    S->>K: mkdir jobs/job-ID, write memory.max, memory.swap.max=0,<br/>memory.oom.group=1, pids.max, cpu.max, open dirfd
     S->>K: memfd_create(spec), write, F_ADD_SEALS(SEAL_WRITE|SHRINK|GROW|SEAL)
     S->>K: pipe2(O_CLOEXEC) for sync, status, stdout, stderr, stdin
     S->>K: clone3(NEWUSER|NEWPID|NEWNS|NEWNET|NEWIPC|NEWUTS|NEWCGROUP|<br/>INTO_CGROUP|PIDFD, exit_signal=SIGCHLD)
     Note over C: Child runs already inside job cgroup, in new namespaces,<br/>with no uid map yet (ns-uid = overflow)
-    C->>K: dup2 fds to fixed numbers; execveat(stage2_fd, "", argv, envp=[], AT_EMPTY_PATH)
+    C->>K: dup2 fds to fixed numbers, execveat(stage2_fd, "", argv, envp=[], AT_EMPTY_PATH)
     Note over C: Fresh single-threaded image. Blocks reading sync pipe.
     S->>I: MapRequest{slot} + pidfd (SCM_RIGHTS)
     I->>K: verify pidfd alive, parent == supervisor, cgroup == job cgroup
-    I->>K: write /proc/<pid>/{uid_map,gid_map} (ns 0 → base, ns 1000 → base+1000)
+    I->>K: write /proc/PID/{uid_map,gid_map} (ns 0 → base, ns 1000 → base+1000)
     I->>K: re-check pidfd alive (pid reuse guard)
     I-->>S: MapOk
     S->>C: sync byte "go"
     C->>C: read+verify sealed spec memfd
-    C->>K: mount("", "/", MS_REC|MS_PRIVATE); build tmpfs root; ro binds of closure;<br/>tmpfs /workspace /tmp; proc(hidepid=invisible,subset=pid); minimal /dev
-    C->>K: pivot_root(".", "."); umount2(".", MNT_DETACH); remount root ro
-    C->>K: sethostname; setrlimit(CORE=0, NOFILE, FSIZE…); write ns max_user_namespaces=0
+    C->>K: mount("", "/", MS_REC|MS_PRIVATE), build tmpfs root, ro binds of closure,<br/>tmpfs /workspace /tmp, proc(hidepid=invisible,subset=pid), minimal /dev
+    C->>K: pivot_root(".", "."), umount2(".", MNT_DETACH), remount root ro
+    C->>K: sethostname, setrlimit(CORE=0, NOFILE, FSIZE…), write ns max_user_namespaces=0
     C->>K: close_range(3, ~0, 0) except status/stdio
     C->>S: status: SetupOk{stage timings}
     C->>K: fork() → workload child
-    W->>K: setsid; PR_CAPBSET_DROP all; setgroups(0); setresgid/setresuid(1000)
-    W->>K: clear ambient/inheritable; securebits locked; PR_SET_NO_NEW_PRIVS
+    W->>K: setsid, PR_CAPBSET_DROP all, setgroups(0), setresgid/setresuid(1000)
+    W->>K: clear ambient/inheritable, securebits locked, PR_SET_NO_NEW_PRIVS
     W->>K: landlock_restrict_self(ruleset)
     W->>K: seccomp(SET_MODE_FILTER, profile)
     W->>K: execve(argv0 from runtime PATH, argv, env allowlist)
-    C->>K: install init seccomp; PR_SET_DUMPABLE 0 (before fork); waitid loop
+    C->>K: install init seccomp, then waitid loop (dumpable already 0 before fork)
     S->>O: Started{job_id, setup_us}
 ```
 
@@ -201,7 +201,7 @@ sequenceDiagram
 
     alt Normal exit
         W->>K: exit(n)
-        K-->>C: SIGCHLD; waitid(P_PID workload)
+        K-->>C: SIGCHLD, waitid(P_PID workload)
         C->>K: kill(-1, SIGKILL) to every other process in the pid ns
         C->>K: waitid(P_ALL) until ECHILD
         C->>C: collect requested artefacts (openat2 RESOLVE_BENEATH|NO_SYMLINKS|NO_XDEV), bounded
@@ -217,7 +217,7 @@ sequenceDiagram
     S->>K: waitid(P_PIDFD, init_pidfd, WEXITED) → reap
     S->>K: wait (inotify) cgroup.events "populated 0", bounded by cleanup timeout
     S->>K: read memory.events/peak, pids.events, cpu.stat
-    S->>K: rmdir jobs/job-<id>
+    S->>K: rmdir jobs/job-ID
     alt rmdir failed or timeout
         S->>S: mark cleanup_stuck, quarantine slot, emit event, retry in background
     end
