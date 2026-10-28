@@ -21,6 +21,9 @@ pub struct Spec {
     pub profile: Option<String>,
     pub policy_dir: Option<String>,
     pub workspace_exec: bool,
+    /// `true` means namespace uid 1000. `false` stays at uid 0 (dev mode).
+    pub production: bool,
+    pub collect: Vec<String>,
     /// Full `/proc` with synthetic `meminfo` and `cpuinfo`.
     pub proc_full: bool,
     pub memory_bytes: u64,
@@ -57,6 +60,10 @@ pub struct Restricted<T> {
 const ROOT: &str = "/tmp/nsbx-root";
 
 pub fn begin() -> Result<Private, Error> {
+    // The supervisor's clone already asked for a mount namespace. That copy
+    // was made before the uid map existed, so its mounts are locked.
+    // A second mount namespace, taken after the map, is one this process owns.
+    nsbx_sys::unshare_mount_ns()?;
     nsbx_sys::make_rprivate()?;
     // subset=pid hides this file, so it is written through the inherited proc
     // before that mount (experiment E3).
@@ -178,8 +185,12 @@ impl Pivoted {
         Ok(set)
     }
 
-    pub fn drop_privileges(self) -> Result<Dropped, Error> {
-        nsbx_sys::drop_dev_privileges()?;
+    pub fn drop_privileges(self, production: bool) -> Result<Dropped, Error> {
+        if production {
+            nsbx_sys::assume_workload_uid()?;
+        } else {
+            nsbx_sys::drop_dev_privileges()?;
+        }
         Ok(Dropped { _priv: () })
     }
 }

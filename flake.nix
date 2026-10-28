@@ -162,6 +162,30 @@
         pkgs:
         let
           nsbx = rustWorkspace pkgs;
+          runtime = mkRuntime pkgs nsbx {
+            name = "python-compute";
+            packages = [ pkgs.python3Minimal ];
+            profile = ./policy/profiles/python-compute.toml;
+            allowlist = ./policy/allowlists/python-compute.txt;
+          };
+          registration = pkgs.closureInfo { rootPaths = [ runtime ]; };
+          jobNode = extra: {
+            imports = [
+              ./nix/module.nix
+              extra
+            ];
+            services.nsbx.enable = true;
+            environment.systemPackages = [
+              nsbx
+              runtime
+            ];
+            environment.etc."nsbx/profiles".source = ./policy/profiles;
+            environment.etc."nsbx/seccomp".source = ./policy/seccomp;
+            environment.etc."nsbx/principals.json".text = ''
+              [{"id":"agent-a","profiles":["python-compute"]}]
+            '';
+            environment.etc."nsbx/registration".source = "${registration}/registration";
+          };
         in
         {
           rust = nsbx;
@@ -189,35 +213,14 @@
           kernels = pkgs.testers.runNixOSTest {
             name = "nsbx-kernels";
             nodes = {
-              k66 = {
-                pkgs,
-                ...
-              }:
-              {
-                imports = [ ./nix/module.nix ];
+              k66 = { pkgs, ... }: jobNode {
                 boot.kernelPackages = pkgs.linuxPackages_6_6;
-                services.nsbx.enable = true;
-                environment.systemPackages = [ nsbx ];
               };
-              k612 = {
-                pkgs,
-                ...
-              }:
-              {
-                imports = [ ./nix/module.nix ];
+              k612 = { pkgs, ... }: jobNode {
                 boot.kernelPackages = pkgs.linuxPackages_6_12;
-                services.nsbx.enable = true;
-                environment.systemPackages = [ nsbx ];
               };
-              latest = {
-                pkgs,
-                ...
-              }:
-              {
-                imports = [ ./nix/module.nix ];
+              latest = { pkgs, ... }: jobNode {
                 boot.kernelPackages = pkgs.linuxPackages_latest;
-                services.nsbx.enable = true;
-                environment.systemPackages = [ nsbx ];
               };
               missing = {
                 lib,
@@ -231,11 +234,59 @@
               };
             };
             testScript = ''
+              def exercise(node):
+                  node.succeed("nix-store --load-db < /etc/nsbx/registration")
+                  env = node.succeed("readlink -f ${runtime}/env").strip()
+                  etc = node.succeed("readlink -f ${runtime}/etc").strip()
+                  def start(unit, sock):
+                      node.succeed(
+                          "systemd-run --unit=" + unit
+                          + " -p Delegate=yes -p KillMode=control-group --collect "
+                          "-- env PATH=/run/current-system/sw/bin NSBX_DELEGATED=1 nsbx-supervisor "
+                          "--socket " + sock
+                          + " --policy /etc/nsbx/profiles --seccomp /etc/nsbx/seccomp "
+                          "--principals /etc/nsbx/principals.json "
+                          "--etc " + etc + " --runtime python-compute=" + env
+                      )
+                  node.succeed("rm -f /run/nsbx.sock /run/nsbx-crash.sock")
+                  start("nsbx-live", "/run/nsbx.sock")
+                  node.succeed("for i in $(seq 1 50); do test -S /run/nsbx.sock && exit 0; sleep 0.1; done; exit 1")
+                  diag = node.succeed(
+                      "set +e; nsbx-run --socket /run/nsbx.sock --principal agent-a -- "
+                      "python3 -c 'import os; print(os.getuid())' "
+                      "> /tmp/nsbx-job.out 2> /tmp/nsbx-job.err; "
+                      "ec=$?; echo EXIT:$ec; echo STDOUT; cat /tmp/nsbx-job.out; "
+                      "echo STDERR; cat /tmp/nsbx-job.err; "
+                      "echo JOURNAL; journalctl -u nsbx-live.service --no-pager -n 40 -o cat; "
+                      "exit 0"
+                  )
+                  stdout = diag.split("STDOUT\n", 1)[-1].split("\nSTDERR", 1)[0].strip()
+                  if stdout != "1000":
+                      raise Exception(diag)
+                  node.succeed("systemctl stop nsbx-live.service")
+
+                  start("nsbx-crash", "/run/nsbx-crash.sock")
+                  node.succeed("for i in $(seq 1 50); do test -S /run/nsbx-crash.sock && exit 0; sleep 0.1; done; exit 1")
+                  node.execute(
+                      "nsbx-run --socket /run/nsbx-crash.sock --principal agent-a -- "
+                      "python3 -c 'import time; time.sleep(60)' >/tmp/nsbx-crash.out 2>&1 &"
+                  )
+                  node.succeed(
+                      "for i in $(seq 1 50); do pgrep -x nsbx-stage2 && exit 0; sleep 0.2; done; "
+                      "echo 'stage2 did not start'; cat /tmp/nsbx-crash.out; exit 1"
+                  )
+                  node.succeed("systemctl kill -s KILL nsbx-crash.service")
+                  node.succeed("sleep 1")
+                  node.fail("pgrep -x nsbx-supervisor")
+                  node.fail("pgrep -x nsbx-stage2")
+                  node.fail("pgrep -x nsbx-warden")
+
               k66.start()
               ver = k66.succeed("uname -r").strip()
               assert ver.startswith("6.6."), ver
               k66.succeed("nsbx-supervisor --check --strict")
               k66.succeed("nsbx-idmap --self-test")
+              exercise(k66)
               k66.shutdown()
 
               k612.start()
@@ -243,11 +294,13 @@
               assert ver.startswith("6.12."), ver
               k612.succeed("nsbx-supervisor --check --strict")
               k612.succeed("nsbx-idmap --self-test")
+              exercise(k612)
               k612.shutdown()
 
               latest.start()
               latest.succeed("nsbx-supervisor --check --strict")
               latest.succeed("nsbx-idmap --self-test")
+              exercise(latest)
               latest.shutdown()
 
               missing.start()

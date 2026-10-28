@@ -45,6 +45,10 @@ pub fn map_slot(_pid: i32, _base: u32) -> Result<(), Error> {
     no("map_slot")
 }
 
+pub fn map_ranges(_pid: i32, _ns0_host: u32, _workload_host: u32) -> Result<(), Error> {
+    no("map_ranges")
+}
+
 pub fn ppid(_pid: i32) -> Result<i32, Error> {
     no("ppid")
 }
@@ -77,6 +81,10 @@ pub fn poll_in(_fd: RawFd, _timeout_ms: i32) -> Result<bool, Error> {
     no("poll")
 }
 
+pub fn fd_is_open(_fd: RawFd) -> bool {
+    false
+}
+
 pub fn dup2(_from: RawFd, _to: RawFd) -> Result<(), Error> {
     no("dup2")
 }
@@ -87,8 +95,34 @@ pub fn stage2_exec(
     _report: RawFd,
     _sync: RawFd,
     _spec: Option<RawFd>,
+    _status: Option<RawFd>,
 ) -> Error {
     Error::Unsupported("execveat")
+}
+
+pub fn fork_process() -> Result<i32, Error> {
+    no("fork")
+}
+
+pub struct ChildExit {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+pub fn wait_child(_pid: i32) -> Result<ChildExit, Error> {
+    no("waitpid")
+}
+
+pub fn die_by_seccomp() -> Result<(), Error> {
+    no("seccomp")
+}
+
+pub fn assume_workload_uid() -> Result<(), Error> {
+    no("setresuid")
+}
+
+pub fn chown_path(_path: &CStr, _uid: u32, _gid: u32) -> Result<(), Error> {
+    no("chown")
 }
 
 pub fn bind_with(
@@ -182,6 +216,10 @@ impl Wait {
 
 pub fn wait_pidfd(_pidfd: RawFd) -> Result<Wait, Error> {
     no("waitid")
+}
+
+pub fn unshare_mount_ns() -> Result<(), Error> {
+    no("unshare_mount_ns")
 }
 
 pub fn make_rprivate() -> Result<(), Error> {

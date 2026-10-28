@@ -124,11 +124,25 @@ pub fn map_caller(pid: i32) -> Result<(), Error> {
 
 /// Two-range map: ns 0 → `base`, ns 1000 → `base + 1000` (design §5.2).
 /// The writer needs `CAP_SETUID` and `CAP_SETGID` in the parent namespace.
+/// `base` must be the child's current host uid. A mismatch leaves the child
+/// unmapped, and it loses every capability in the new namespace.
 pub fn map_slot(pid: i32, base: u32) -> Result<(), Error> {
     let high = base
         .checked_add(1000)
         .ok_or_else(|| Error::from_io("uid map", io::Error::other("slot base overflows u32")))?;
-    let body = format!("0 {base} 1\n1000 {high} 1\n");
+    map_ranges(pid, base, high)
+}
+
+/// Namespace uid 0 → `ns0_host`, namespace uid 1000 → `workload_host`.
+/// `ns0_host` has to be the child's current host uid (see [`map_slot`]).
+pub fn map_ranges(pid: i32, ns0_host: u32, workload_host: u32) -> Result<(), Error> {
+    if ns0_host == workload_host {
+        return Err(Error::from_io(
+            "uid map",
+            io::Error::other("uid ranges overlap"),
+        ));
+    }
+    let body = format!("0 {ns0_host} 1\n1000 {workload_host} 1\n");
     let write = |name: &str, text: &str| -> Result<(), Error> {
         std::fs::write(format!("/proc/{pid}/{name}"), text).map_err(|e| {
             Error::from_io("uid map", io::Error::new(e.kind(), format!("{name}: {e}")))

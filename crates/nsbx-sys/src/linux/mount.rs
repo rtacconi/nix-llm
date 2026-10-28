@@ -23,6 +23,25 @@ const MOUNT_ATTR_NODEV: u64 = 0x4;
 const MOUNT_ATTR_NOEXEC: u64 = 0x8;
 const AT_RECURSIVE: i32 = 0x8000;
 
+/// A new mount namespace. Call this only after the uid map is written.
+/// `clone3` that combines `CLONE_NEWUSER` and `CLONE_NEWNS` leaves the mounts
+/// locked, and `MS_PRIVATE` then returns `EPERM`.
+pub fn unshare_mount_ns() -> Result<(), Error> {
+    // SAFETY: `CLONE_NEWNS` affects only the caller. Stage 2 is single-threaded.
+    let rc = unsafe { libc::unshare(libc::CLONE_NEWNS) };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        // SAFETY: geteuid cannot fail. It tells a later failure which uid was mapped.
+        let uid = unsafe { libc::geteuid() };
+        Err(Error::from_io(
+            "unshare mount",
+            std::io::Error::other(format!("euid {uid}: {err}")),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn make_rprivate() -> Result<(), Error> {
     // SAFETY: the arguments are constant C strings. MS_REC|MS_PRIVATE only
     // changes this mount namespace's propagation.
@@ -36,7 +55,13 @@ pub fn make_rprivate() -> Result<(), Error> {
         )
     };
     if rc < 0 {
-        Err(Error::last("mount MS_PRIVATE"))
+        let err = std::io::Error::last_os_error();
+        // SAFETY: geteuid cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        Err(Error::from_io(
+            "mount MS_PRIVATE",
+            std::io::Error::other(format!("euid {uid}: {err}")),
+        ))
     } else {
         Ok(())
     }

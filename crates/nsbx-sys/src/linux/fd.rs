@@ -72,7 +72,14 @@ pub fn stage2_exec(
     report: RawFd,
     sync: RawFd,
     spec: Option<RawFd>,
+    status: Option<RawFd>,
 ) -> Error {
+    // The program descriptor may itself be 3, 4, 5, or 8. Copy it above the
+    // keep-list before those dups replace whatever is there.
+    let program = match dup_above(program, 16) {
+        Ok(fd) => fd,
+        Err(err) => return err,
+    };
     if let Err(e) = dup2(report, 3) {
         return e;
     }
@@ -81,6 +88,11 @@ pub fn stage2_exec(
     }
     if let Some(spec) = spec
         && let Err(e) = dup2(spec, 5)
+    {
+        return e;
+    }
+    if let Some(status) = status
+        && let Err(e) = dup2(status, 8)
     {
         return e;
     }
@@ -153,6 +165,23 @@ pub fn execveat_empty(fd: RawFd, argv: &[impl AsRef<CStr>], envp: &[impl AsRef<C
 }
 
 /// `true` when `fd` is readable or hung up. `timeout_ms` of -1 blocks.
+fn dup_above(fd: RawFd, min: i32) -> Result<RawFd, Error> {
+    // SAFETY: F_DUPFD_CLOEXEC copies one caller-owned descriptor to an fd
+    // number at least `min`. Both descriptors stay owned by the caller.
+    let rc = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, min) };
+    if rc < 0 {
+        Err(Error::last("fcntl"))
+    } else {
+        Ok(rc)
+    }
+}
+
+pub fn fd_is_open(fd: RawFd) -> bool {
+    // SAFETY: F_GETFD only reads the descriptor flags of a caller-owned fd.
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    rc >= 0
+}
+
 pub fn poll_in(fd: RawFd, timeout_ms: i32) -> Result<bool, Error> {
     let mut fds = [libc::pollfd {
         fd,

@@ -113,6 +113,7 @@ fn mountinfo_matches_and_python_prints() {
                 report,
                 sync,
                 Some(spec_fd),
+                None,
             );
             let _ = write_fd(2, err.to_string().as_bytes());
         },

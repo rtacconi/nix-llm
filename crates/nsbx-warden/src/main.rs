@@ -26,6 +26,8 @@ mod linux {
     const STDERR_IN: i32 = 5;
     const STDOUT_OUT: i32 = 6;
     const STDERR_OUT: i32 = 7;
+    const STATUS_IN: i32 = 8;
+    const STATUS_OUT: i32 = 9;
 
     pub fn run() -> Result<(), String> {
         let cap: u64 = std::env::args()
@@ -45,6 +47,44 @@ mod linux {
                 err_open = copy(STDERR_IN, STDERR_OUT, &mut left)?;
             }
         }
+        take_status()
+    }
+
+    fn take_status() -> Result<(), String> {
+        if !nsbx_sys::fd_is_open(STATUS_IN) {
+            return Ok(());
+        }
+        let mut buf = Vec::new();
+        loop {
+            let ready = nsbx_sys::poll_in(STATUS_IN, 1000).map_err(|e| e.to_string())?;
+            if !ready {
+                continue;
+            }
+            let mut chunk = [0u8; 4096];
+            match nsbx_sys::read_fd(STATUS_IN, &mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > 1_048_576 {
+                        return Err("status record is too large".into());
+                    }
+                }
+                Err(err)
+                    if err.raw_os_error() == Some(libc::EAGAIN)
+                        || err.raw_os_error() == Some(libc::EWOULDBLOCK) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let decoded = nsbx_proto::status::decode(&buf)?;
+        let line = nsbx_proto::status::json_line(decoded.exit_code, &decoded.items);
+        write_all(STATUS_OUT, line.as_bytes())?;
+        write_all(STATUS_OUT, b"\n")?;
         Ok(())
     }
 

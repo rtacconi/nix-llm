@@ -14,8 +14,8 @@ use nsbx_policy::narrow::Principal;
 use nsbx_policy::profile::{Backend, ProcMode};
 use nsbx_proto::frame::{self, FrameType, HEADER_LEN, MAX_FRAME_LEN};
 use nsbx_proto::msg::{
-    self, Accepted, Cleanup, ErrorCategory, ErrorV1, Hello, HelloAck, Rejected, ResultV1, Started,
-    Stream, Submit, TerminationReason,
+    self, Accepted, ArtifactInfo, Cleanup, ErrorCategory, ErrorV1, Hello, HelloAck, Rejected,
+    ResultV1, Started, Stream, Submit, TerminationReason,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde::Serialize;
@@ -423,6 +423,7 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         seccomp,
         profile.workspace_exec,
     );
+    append_identity(&mut spec, &profile.collect_prefixes)?;
     if profile.proc == ProcMode::Full {
         spec.push_str("proc\nfull\nmemory_bytes\n");
         spec.push_str(&memory.to_string());
@@ -437,8 +438,18 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         },
     )?;
     let started = Instant::now();
-    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1))?;
-    let warden = match crate::warden::spawn(started_box.stdout, started_box.stderr, output_cap) {
+    let idmap = if dev_mode() {
+        spawn::IdMap::Caller
+    } else {
+        spawn::IdMap::Slot { base: 2_000_000 }
+    };
+    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1), idmap)?;
+    let warden = match crate::warden::spawn(
+        started_box.stdout,
+        started_box.stderr,
+        started_box.status,
+        output_cap,
+    ) {
         Ok(warden) => warden,
         Err(err) => {
             let _ = started_box.job.kill();
@@ -449,6 +460,7 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         stdout: warden.stdout,
         stderr: warden.stderr,
         report: started_box.report,
+        status: warden.status,
         pidfd: started_box.pidfd,
         job: started_box.job,
     };
@@ -590,10 +602,24 @@ fn drain(sock: i32, job: &mut Live, stdout: bool) -> Result<bool, String> {
 fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     let waited = nsbx_sys::wait_pidfd(job.box_.pidfd.as_raw_fd()).map_err(|e| e.to_string())?;
     let _ = nsbx_sys::wait_pidfd(job.warden.as_raw_fd());
+    let mut status_buf = Vec::new();
+    loop {
+        let mut tmp = [0u8; 4096];
+        match nsbx_sys::read_fd(job.box_.status.as_raw_fd(), &mut tmp) {
+            Ok(0) => break,
+            Ok(n) => status_buf.extend_from_slice(&tmp[..n]),
+            Err(_) => break,
+        }
+        if status_buf.len() > 1_048_576 {
+            break;
+        }
+    }
+    let artifacts = parse_artifacts(&status_buf);
     let _ = read_some(job.box_.report.as_raw_fd(), &mut job.report);
     let report = String::from_utf8_lossy(&job.report);
+    let failure = setup_failure(&report);
     let (reason, exit_code) = termination(
-        report.starts_with("ERR"),
+        failure.is_some(),
         job.wall_hit,
         job.cancel.is_some(),
         waited.exit_code(),
@@ -601,7 +627,7 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     let result = ResultV1 {
         job_id: job.id.parse().map_err(|_| "job id".to_string())?,
         reason,
-        stage: report.starts_with("ERR").then(|| report.trim().to_string()),
+        stage: failure,
         exit_code,
         signal: None,
         wall_ms: u64::try_from(job.started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -613,7 +639,7 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
         stdout_bytes: job.stdout_bytes,
         stderr_bytes: job.stderr_bytes,
         output_truncated: job.truncated,
-        artifacts: Vec::new(),
+        artifacts,
         cleanup: Cleanup::Ok,
         runtime: job.runtime.clone(),
         policy_hash: job.hash.clone(),
@@ -627,6 +653,15 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     job.finished = true;
     let _ = job.box_.job.kill();
     Ok(())
+}
+
+/// The mount census is written before a later step can fail, so the error
+/// line is not always the first line of the report.
+fn setup_failure(report: &str) -> Option<String> {
+    report
+        .lines()
+        .find(|line| line.starts_with("ERR "))
+        .map(str::to_string)
 }
 
 fn termination(
@@ -683,6 +718,65 @@ fn render_spec(
     spec.push_str("\nworkspace_exec\n");
     spec.push_str(if workspace_exec { "true\n" } else { "false\n" });
     spec
+}
+
+fn append_identity(
+    spec: &mut String,
+    prefixes: &[nsbx_policy::path::RelPath],
+) -> Result<(), String> {
+    spec.push_str("identity\n");
+    spec.push_str(if dev_mode() { "dev\n" } else { "production\n" });
+    spec.push_str("collect\n");
+    spec.push_str(&prefixes.len().to_string());
+    spec.push('\n');
+    for prefix in prefixes {
+        let text = prefix.to_string();
+        if text.contains('\n') {
+            return Err("collect prefix contains a newline".into());
+        }
+        spec.push_str(&text);
+        spec.push('\n');
+    }
+    Ok(())
+}
+
+fn parse_artifacts(buf: &[u8]) -> Vec<ArtifactInfo> {
+    let text = String::from_utf8_lossy(buf);
+    let Some(line) = text.lines().next() else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let Some(list) = value.get("artifacts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in list {
+        let Some(path) = item.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(size) = item.get("size").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(sha) = item.get("sha256").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let risk = item
+            .get("host_executable_risk")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        out.push(ArtifactInfo {
+            path: path.to_string(),
+            size,
+            sha256: sha.to_string(),
+            host_executable_risk: risk,
+        });
+    }
+    out
 }
 
 fn reject(
@@ -876,6 +970,16 @@ mod tests {
         let (reason, code) = termination(false, true, true, None);
         assert_eq!(reason, TerminationReason::WallTimeout);
         assert_eq!(code, None);
+    }
+
+    #[test]
+    fn an_error_after_the_mount_census_is_setup_failure() {
+        let report = "/\n/tmp\nERR chown: Operation not permitted (os error 1)\n";
+        let failure = setup_failure(report);
+        assert!(failure.is_some());
+        let (reason, code) = termination(failure.is_some(), false, false, Some(99));
+        assert_eq!(reason, TerminationReason::SetupFailed);
+        assert_eq!(code, Some(99));
     }
 
     #[test]

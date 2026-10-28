@@ -100,6 +100,53 @@ fn isolation_proc_files_are_synthetic() {
 }
 
 #[test]
+fn isolation_collects_workspace_files() {
+    if skip_or_delegate() {
+        return;
+    }
+    let python = real_path("python3");
+    let runtime = store_root(&python);
+    let closure = store_closure(&python);
+    let etc = std::env::temp_dir().join("nsbx-m4-collect-etc");
+    let _ = std::fs::remove_dir_all(&etc);
+    std::fs::create_dir_all(&etc).expect("etc");
+    std::fs::write(etc.join("passwd"), "root:x:0:0:root:/:/bin/false\n").expect("passwd");
+    let script = "exec(\"open('/workspace/out/note','w').write('hi')\\nopen('/workspace/out/flake.nix','w').write('x')\\n\")";
+    let got = run_tail(
+        &python,
+        &runtime,
+        &closure,
+        &etc,
+        "python",
+        &[script],
+        "collect\n1\nout\n",
+    );
+    assert!(
+        got.exit == Some(0),
+        "exit {:?} stdout {:?} stderr {:?} report {}",
+        got.exit,
+        got.stdout,
+        got.stderr,
+        got.report
+    );
+    let decoded = nsbx_proto::status::decode(&got.status).expect("status");
+    assert_eq!(decoded.exit_code, 0);
+    let note = decoded
+        .items
+        .iter()
+        .find(|item| item.path == "out/note")
+        .expect("note");
+    assert_eq!(note.data, b"hi");
+    assert!(!note.risk);
+    let flake = decoded
+        .items
+        .iter()
+        .find(|item| item.path == "out/flake.nix")
+        .expect("flake");
+    assert!(flake.risk);
+}
+
+#[test]
 fn kill_list_holds_for_every_profile() {
     if skip_or_delegate() {
         return;
@@ -175,6 +222,7 @@ struct Out {
     stdout: String,
     stderr: String,
     report: String,
+    status: Vec<u8>,
 }
 
 fn run(
@@ -264,6 +312,7 @@ fn run_once(
     let (spec_r, spec_w) = pipe().expect("pipe");
     let (out_r, out_w) = pipe().expect("pipe");
     let (err_r, err_w) = pipe().expect("pipe");
+    let (status_r, status_w) = pipe().expect("pipe");
     write_fd(spec_w.as_raw_fd(), spec.as_bytes()).expect("spec");
     drop(spec_w);
     let argv0 = CString::new("nsbx-stage2").expect("argv");
@@ -274,6 +323,7 @@ fn run_once(
     let spec_fd = spec_r.as_raw_fd();
     let stdout = out_w.as_raw_fd();
     let stderr = err_w.as_raw_fd();
+    let status = status_w.as_raw_fd();
     let child = clone3(
         CloneFlags::SANDBOX,
         Some(job.as_fd().as_raw_fd()),
@@ -286,6 +336,7 @@ fn run_once(
                 report,
                 sync,
                 Some(spec_fd),
+                Some(status),
             );
             let _ = write_fd(2, err.to_string().as_bytes());
         },
@@ -296,6 +347,7 @@ fn run_once(
     drop(spec_r);
     drop(out_w);
     drop(err_w);
+    drop(status_w);
     drop(program);
     map_caller(child.pid).expect("map");
     write_fd(sync_w.as_raw_fd(), b"x").expect("sync");
@@ -304,6 +356,7 @@ fn run_once(
     let stdout = String::from_utf8_lossy(&read_to_end(out_r.as_raw_fd())).into_owned();
     let stderr = String::from_utf8_lossy(&read_to_end(err_r.as_raw_fd())).into_owned();
     let report = String::from_utf8_lossy(&read_to_end(report_r.as_raw_fd())).into_owned();
+    let status = read_to_end(status_r.as_raw_fd());
     let _ = job.remove();
     let exit = waited.ok().and_then(|w| w.exit_code());
     let _ = layout;
@@ -312,6 +365,7 @@ fn run_once(
         stdout,
         stderr,
         report,
+        status,
     }
 }
 

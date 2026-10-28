@@ -13,16 +13,21 @@ fn main() -> ExitCode {
             }
         },
         Some("--map") => {
+            let usage = "usage: nsbx-idmap --map PID NS0_HOST WORKLOAD_HOST PARENT";
             let Some(pid) = args.next().and_then(|s| s.parse::<i32>().ok()) else {
-                eprintln!("usage: nsbx-idmap --map PID BASE PARENT");
+                eprintln!("{usage}");
                 return ExitCode::from(2);
             };
-            let Some(base) = args.next().and_then(|s| s.parse::<u32>().ok()) else {
-                eprintln!("usage: nsbx-idmap --map PID BASE PARENT");
+            let Some(ns0_host) = args.next().and_then(|s| s.parse::<u32>().ok()) else {
+                eprintln!("{usage}");
+                return ExitCode::from(2);
+            };
+            let Some(workload_host) = args.next().and_then(|s| s.parse::<u32>().ok()) else {
+                eprintln!("{usage}");
                 return ExitCode::from(2);
             };
             let Some(parent) = args.next().and_then(|s| s.parse::<i32>().ok()) else {
-                eprintln!("usage: nsbx-idmap --map PID BASE PARENT");
+                eprintln!("{usage}");
                 return ExitCode::from(2);
             };
             match nsbx_sys::ppid(pid) {
@@ -36,7 +41,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             }
-            match nsbx_sys::map_slot(pid, base) {
+            match nsbx_sys::map_ranges(pid, ns0_host, workload_host) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
                     eprintln!("{err}");
@@ -45,7 +50,7 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: nsbx-idmap --self-test | --map PID BASE PARENT");
+            eprintln!("usage: nsbx-idmap --self-test | --map PID NS0_HOST WORKLOAD_HOST PARENT");
             ExitCode::from(2)
         }
     }
