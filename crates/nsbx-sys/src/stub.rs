@@ -95,8 +95,36 @@ pub fn mount_flags(
     no("mount_setattr")
 }
 
+#[derive(Clone, Copy)]
+pub struct FilterInsn {
+    pub code: u16,
+    pub jt: u8,
+    pub jf: u8,
+    pub k: u32,
+}
+
+pub fn apply_seccomp_filter(_prog: &[FilterInsn]) -> Result<(), Error> {
+    no("seccomp")
+}
+
 pub fn set_no_new_privs() -> Result<(), Error> {
     no("no_new_privs")
+}
+
+pub fn euid() -> u32 {
+    0
+}
+
+pub fn drop_dev_privileges() -> Result<(), Error> {
+    no("capset")
+}
+
+pub fn syscall0(_nr: i64) -> Result<i64, Error> {
+    no("syscall")
+}
+
+pub fn peer_cred(_fd: RawFd) -> Result<(u32, u32, u32), Error> {
+    no("SO_PEERCRED")
 }
 
 pub fn read_fd(_fd: RawFd, _buf: &mut [u8]) -> Result<usize, Error> {

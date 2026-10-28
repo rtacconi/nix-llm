@@ -649,7 +649,7 @@ deliberate non-goal [L13].
 | `clone` | Allowed only without `CLONE_NEW*` flags |
 | `clone3` | `ENOSYS` (libc falls back to `clone`) |
 | `socket`, `socketpair` | Family allowlist |
-| `ioctl` | `FIONREAD`, `FIONBIO`, `FIOCLEX`, `FIONCLEX`, `TCGETS`, `TIOCGWINSZ` only |
+| `ioctl` | `FIONREAD`, `FIONBIO`, `FIOCLEX`, `FIONCLEX`, `TCGETS`, `TCGETS2`, `TIOCGWINSZ` only |
 | `prctl` | Named options only |
 | `personality` | Query and `PER_LINUX` only |
 | `seccomp` | `SET_MODE_FILTER` without `NEW_LISTENER` (adding filters can only narrow) |

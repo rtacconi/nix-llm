@@ -42,6 +42,54 @@ impl Wait {
     }
 }
 
+/// One classic BPF instruction. Layout matches `sock_filter`.
+#[derive(Clone, Copy)]
+pub struct FilterInsn {
+    pub code: u16,
+    pub jt: u8,
+    pub jf: u8,
+    pub k: u32,
+}
+
+/// Install one seccomp filter with `seccomp(SET_MODE_FILTER)`.
+/// `NO_NEW_PRIVS` must already be set. This does not call `prctl`, because a
+/// profile that only allows a `prctl` subset would reject that call.
+pub fn apply_seccomp_filter(prog: &[FilterInsn]) -> Result<(), Error> {
+    if prog.is_empty() {
+        return Err(Error::from_io(
+            "seccomp",
+            std::io::Error::other("empty filter"),
+        ));
+    }
+    if prog.len() > u16::MAX as usize {
+        return Err(Error::from_io(
+            "seccomp",
+            std::io::Error::other("filter longer than u16"),
+        ));
+    }
+    let mut raw: Vec<libc::sock_filter> = prog
+        .iter()
+        .map(|insn| libc::sock_filter {
+            code: insn.code,
+            jt: insn.jt,
+            jf: insn.jf,
+            k: insn.k,
+        })
+        .collect();
+    let bpf = libc::sock_fprog {
+        len: raw.len() as u16,
+        filter: raw.as_mut_ptr(),
+    };
+    // SAFETY: `bpf` points at `raw`, which stays alive for the syscall. The
+    // kernel copies the program. The operation is SET_MODE_FILTER with no flags.
+    let rc = unsafe { libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, 0, &bpf) };
+    if rc < 0 {
+        Err(Error::last("seccomp"))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn set_no_new_privs() -> Result<(), Error> {
     // SAFETY: the arguments are the documented prctl constants. This only
     // affects the calling process.

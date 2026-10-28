@@ -18,6 +18,9 @@ pub struct Spec {
     pub etc: String,
     pub closure: Vec<String>,
     pub argv: Vec<CString>,
+    pub profile: Option<String>,
+    pub policy_dir: Option<String>,
+    pub workspace_exec: bool,
 }
 
 pub struct Private {
@@ -33,6 +36,14 @@ pub struct Pivoted {
 }
 
 pub struct SeccompApplied {
+    _priv: (),
+}
+
+pub struct Dropped {
+    _priv: (),
+}
+
+pub struct Landlocked {
     _priv: (),
 }
 
@@ -159,7 +170,46 @@ impl Pivoted {
         Ok(set)
     }
 
+    pub fn drop_privileges(self) -> Result<Dropped, Error> {
+        nsbx_sys::drop_dev_privileges()?;
+        Ok(Dropped { _priv: () })
+    }
+}
+
+impl Dropped {
+    pub fn apply_landlock(self, spec: &Spec) -> Result<Landlocked, Error> {
+        apply_landlock(spec)?;
+        Ok(Landlocked { _priv: () })
+    }
+}
+
+impl Landlocked {
+    pub fn apply_profile(
+        self,
+        programs: &[seccompiler::BpfProgram],
+    ) -> Result<Restricted<SeccompApplied>, Error> {
+        for prog in programs {
+            let insns: Vec<nsbx_sys::FilterInsn> = prog
+                .iter()
+                .map(|insn| nsbx_sys::FilterInsn {
+                    code: insn.code,
+                    jt: insn.jt,
+                    jf: insn.jf,
+                    k: insn.k,
+                })
+                .collect();
+            nsbx_sys::apply_seccomp_filter(&insns)?;
+        }
+        Ok(Restricted {
+            _mark: SeccompApplied { _priv: () },
+        })
+    }
+}
+
+impl Pivoted {
     /// `NO_NEW_PRIVS` plus a filter that returns `ENOSYS` for `clone3`.
+    /// Used when the spec names no profile. A profile takes the drop,
+    /// Landlock and compiled-filter path instead.
     pub fn apply_baseline(self) -> Result<Restricted<SeccompApplied>, Error> {
         nsbx_sys::set_no_new_privs()?;
         let arch = seccompiler::TargetArch::try_from(std::env::consts::ARCH)
@@ -213,6 +263,87 @@ fn store_path(path: &str) -> bool {
 
 fn safe_abs(path: &str) -> bool {
     path.starts_with('/') && !path.contains('\0') && !path.split('/').any(|p| p == "..")
+}
+
+fn apply_landlock(spec: &Spec) -> Result<(), Error> {
+    use landlock::{
+        ABI, Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus,
+    };
+    let detected = nsbx_sys::landlock_abi()?;
+    if detected < 3 {
+        return Err(Error::from_io(
+            "landlock",
+            std::io::Error::other(format!("ABI {detected} is below 3")),
+        ));
+    }
+    let abi = if detected >= 6 {
+        ABI::V6
+    } else if detected >= 5 {
+        ABI::V5
+    } else if detected >= 4 {
+        ABI::V4
+    } else {
+        ABI::V3
+    };
+    let fail = |e: &dyn std::fmt::Display| {
+        Error::from_io("landlock", std::io::Error::other(e.to_string()))
+    };
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(abi))
+        .map_err(|e| fail(&e))?
+        .create()
+        .map_err(|e| fail(&e))?;
+    let read_exec = AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute;
+    let read_only = AccessFs::ReadFile | AccessFs::ReadDir;
+    let write = AccessFs::ReadFile
+        | AccessFs::ReadDir
+        | AccessFs::WriteFile
+        | AccessFs::RemoveFile
+        | AccessFs::RemoveDir
+        | AccessFs::MakeDir
+        | AccessFs::MakeReg
+        | AccessFs::Refer
+        | AccessFs::Truncate;
+    let mut workspace = write;
+    if spec.workspace_exec {
+        workspace |= AccessFs::Execute;
+    }
+    let scratch = write | AccessFs::MakeSock;
+    let device = AccessFs::ReadFile | AccessFs::WriteFile;
+    for path in &spec.closure {
+        ruleset = add_rule(ruleset, path, read_exec)?;
+    }
+    ruleset = add_rule(ruleset, "/etc", read_only)?;
+    ruleset = add_rule(ruleset, "/proc", read_only)?;
+    ruleset = add_rule(ruleset, "/workspace", workspace)?;
+    ruleset = add_rule(ruleset, "/tmp", scratch)?;
+    ruleset = add_rule(ruleset, "/dev/shm", scratch)?;
+    for dev in ["null", "zero", "full", "random", "urandom"] {
+        ruleset = add_rule(ruleset, &format!("/dev/{dev}"), device)?;
+    }
+    let status = ruleset.restrict_self().map_err(|e| fail(&e))?;
+    if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
+        return Err(Error::from_io(
+            "landlock",
+            std::io::Error::other("ruleset was not fully enforced"),
+        ));
+    }
+    Ok(())
+}
+
+fn add_rule(
+    ruleset: landlock::RulesetCreated,
+    path: &str,
+    access: impl Into<landlock::BitFlags<landlock::AccessFs>>,
+) -> Result<landlock::RulesetCreated, Error> {
+    use landlock::RulesetCreatedAttr;
+    let fd = landlock::PathFd::new(path)
+        .map_err(|e| Error::from_io("landlock", std::io::Error::other(format!("{path}: {e}"))))?;
+    let rule = landlock::PathBeneath::new(fd, access);
+    ruleset
+        .add_rule(rule)
+        .map_err(|e| Error::from_io("landlock", std::io::Error::other(format!("{path}: {e}"))))
 }
 
 fn c_str(s: &str) -> Result<CString, Error> {

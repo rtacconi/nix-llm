@@ -8,11 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 nsbx-sys = { path = "../nsbx-sys" }
+nsbx-policy = { path = "../nsbx-policy" }
 libc.workspace = true
 seccompiler = "0.5.0"
+landlock = "0.4.4"
 
 [dev-dependencies]
 nsbx-cgroup = { path = "../nsbx-cgroup" }
+nsbx-policy = { path = "../nsbx-policy" }
 nsbx-sys = { path = "../nsbx-sys" }
 
 [lints]

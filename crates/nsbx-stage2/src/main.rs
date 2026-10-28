@@ -36,6 +36,24 @@ fn setup_main() {
         Ok(spec) => spec,
         Err(err) => fail(&err),
     };
+    // The policy files are on the host. Compile before the pivot hides them.
+    let programs = match (&spec.profile, &spec.policy_dir) {
+        (Some(profile), Some(dir)) => {
+            let sources = match nsbx_policy::bpf::load_sources(std::path::Path::new(dir)) {
+                Ok(sources) => sources,
+                Err(err) => fail(&err.to_string()),
+            };
+            let resolved = match nsbx_policy::seccomp::resolve(profile, &sources) {
+                Ok(resolved) => resolved,
+                Err(err) => fail(&err.to_string()),
+            };
+            match nsbx_policy::bpf::compile(&resolved) {
+                Ok(programs) => Some(programs),
+                Err(err) => fail(&err.to_string()),
+            }
+        }
+        _ => None,
+    };
     let pivoted = match setup::begin().and_then(|private| private.mount_root(&spec)) {
         Ok(rooted) => match rooted.pivot() {
             Ok(pivoted) => pivoted,
@@ -47,9 +65,24 @@ fn setup_main() {
         Ok(points) => points,
         Err(err) => fail(&err.to_string()),
     };
-    let restricted = match pivoted.apply_baseline() {
-        Ok(restricted) => restricted,
-        Err(err) => fail(&err.to_string()),
+    let restricted = if let Some(programs) = programs {
+        let dropped = match pivoted.drop_privileges() {
+            Ok(dropped) => dropped,
+            Err(err) => fail(&err.to_string()),
+        };
+        let locked = match dropped.apply_landlock(&spec) {
+            Ok(locked) => locked,
+            Err(err) => fail(&err.to_string()),
+        };
+        match locked.apply_profile(&programs) {
+            Ok(restricted) => restricted,
+            Err(err) => fail(&err.to_string()),
+        }
+    } else {
+        match pivoted.apply_baseline() {
+            Ok(restricted) => restricted,
+            Err(err) => fail(&err.to_string()),
+        }
     };
     let mut report = String::new();
     for point in &points {
@@ -104,11 +137,26 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
     for _ in 0..closure_n {
         closure.push(next_line(&mut lines)?);
     }
+    let mut profile = None;
+    let mut policy_dir = None;
+    let mut workspace_exec = false;
+    if lines.next().is_some_and(|l| l == "profile") {
+        profile = Some(next_line(&mut lines)?);
+        if lines.next().is_some_and(|l| l == "policy") {
+            policy_dir = Some(next_line(&mut lines)?);
+        }
+        if lines.next().is_some_and(|l| l == "workspace_exec") {
+            workspace_exec = next_line(&mut lines)? == "true";
+        }
+    }
     Ok(Spec {
         runtime,
         etc,
         closure,
         argv,
+        profile,
+        policy_dir,
+        workspace_exec,
     })
 }
 

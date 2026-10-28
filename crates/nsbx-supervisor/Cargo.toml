@@ -1,0 +1,24 @@
+[package]
+name = "nsbx-supervisor"
+description = "nsbx/1 supervisor: peer credentials, policy narrowing, and one sandbox job"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Dev-mode privilege drop (namespace uid 0). Release builds leave this off.
+# `--strict` still refuses to start when the host sysctls are wrong.
+insecure-dev-mode = []
+
+[dependencies]
+nsbx-cgroup = { path = "../nsbx-cgroup" }
+nsbx-policy = { path = "../nsbx-policy" }
+nsbx-proto = { path = "../nsbx-proto" }
+nsbx-sys = { path = "../nsbx-sys" }
+rustix = { workspace = true, features = ["event"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
