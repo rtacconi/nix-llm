@@ -35,7 +35,8 @@ three parts:
 | PyO3 binding for `narrow()` | [crates/nsbx-pyo3](crates/nsbx-pyo3) | Done: the orchestrator and the supervisor narrow with the same Rust code. Built by maturin through Nix, with type stubs |
 | Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API incl. `/v1/run` and `/v1/profiles/{name}/environment`, auth, principal caps, policy denials (422) from the shared `narrow()`, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
 | Syscalls and cgroup v2 | [crates/nsbx-sys](crates/nsbx-sys), [crates/nsbx-cgroup](crates/nsbx-cgroup) | Linux: `clone3` into a delegated cgroup, pidfd, mount helpers. `nsbx-sys` is the only crate with `unsafe` |
-| Trivial stage 2 | [crates/nsbx-stage2](crates/nsbx-stage2) | `execveat` immediately after `clone3`. Filesystem typestate is next |
+| Stage 2 filesystem | [crates/nsbx-stage2](crates/nsbx-stage2) | Typestate through `Restricted<SeccompApplied>`. Pivot, exact mountinfo, `python3 -c`. Profile seccomp and Landlock are next |
+| Runtimes | [flake.nix](flake.nix) `mkRuntime` | `python-compute` and `cli-text`. BPF hash is added with the profile compiler |
 | Supervisor, full stage 2, idmap, warden | — | Not started |
 
 ## Development

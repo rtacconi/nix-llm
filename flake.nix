@@ -72,11 +72,69 @@
           # separately by maturin (nsbxPolicyPy).
           doCheck = true;
         };
+
+      # Design §9. One derivation pins the env, the etc skeleton and the store
+      # paths the supervisor is allowed to bind. The seccomp BPF hash is added
+      # when the profile compiler lands (M4).
+      mkRuntime =
+        pkgs:
+        { name, packages, profile }:
+        let
+          env = pkgs.buildEnv {
+            name = "${name}-env";
+            paths = packages;
+            pathsToLink = [ "/bin" ];
+          };
+          etc = pkgs.runCommand "${name}-etc" { } ''
+            mkdir -p $out
+            cat > $out/passwd <<'EOF'
+            root:x:0:0:root:/:/bin/false
+            sandbox:x:1000:1000:sandbox:/workspace:/bin/false
+            EOF
+            cat > $out/group <<'EOF'
+            root:x:0:
+            sandbox:x:1000:
+            EOF
+            printf '127.0.0.1 localhost\n' > $out/hosts
+            : > $out/resolv.conf
+          '';
+          info = pkgs.closureInfo { rootPaths = [ env etc ]; };
+        in
+        pkgs.runCommand "${name}-runtime"
+          {
+            passthru = { inherit env etc; };
+          }
+          ''
+            mkdir -p $out
+            ln -s ${env} $out/env
+            ln -s ${etc} $out/etc
+            cp ${info}/store-paths $out/store-paths
+            cp ${profile} $out/profile.toml
+            cat > $out/policy.json <<EOF
+            {"schema":1,"runtime":"$out","profile":"${name}"}
+            EOF
+            find ${env}/bin \( -type f -o -type l \) | sort > $out/executables
+          '';
     in
     {
       packages = forAll (pkgs: {
         nsbx-rust = rustWorkspace pkgs;
         default = rustWorkspace pkgs;
+        python-compute = mkRuntime pkgs {
+          name = "python-compute";
+          packages = [ pkgs.python3Minimal ];
+          profile = ./policy/profiles/python-compute.toml;
+        };
+        cli-text = mkRuntime pkgs {
+          name = "cli-text";
+          packages = [
+            pkgs.coreutils
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.jq
+          ];
+          profile = ./policy/profiles/cli-text.toml;
+        };
       });
 
       checks = forAll (pkgs: {

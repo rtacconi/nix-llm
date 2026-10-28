@@ -42,6 +42,17 @@ impl Wait {
     }
 }
 
+pub fn set_no_new_privs() -> Result<(), Error> {
+    // SAFETY: the arguments are the documented prctl constants. This only
+    // affects the calling process.
+    let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if rc < 0 {
+        Err(Error::last("PR_SET_NO_NEW_PRIVS"))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn wait_pidfd(pidfd: std::os::fd::RawFd) -> Result<Wait, Error> {
     // SAFETY: the raw fd is borrowed for the duration of the wait and is not closed.
     let borrowed = unsafe { BorrowedFd::borrow_raw(pidfd) };
@@ -51,4 +62,25 @@ pub fn wait_pidfd(pidfd: std::os::fd::RawFd) -> Result<Wait, Error> {
             Error::from_io("waitid", std::io::Error::other("child has no exit status"))
         })?;
     Ok(Wait { status })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::AsRawFd;
+
+    use super::*;
+    use crate::{CloneFlags, clone3};
+
+    #[test]
+    fn no_new_privs_is_set_in_the_child() {
+        let child = clone3(CloneFlags::NEWUSER, None, || {
+            set_no_new_privs().expect("nnp");
+            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            let ok = status.lines().any(|line| line == "NoNewPrivs:\t1");
+            std::process::exit(if ok { 0 } else { 7 });
+        })
+        .expect("clone");
+        let wait = wait_pidfd(child.pidfd.as_raw_fd()).expect("wait");
+        assert_eq!(wait.exit_code(), Some(0));
+    }
 }

@@ -45,6 +45,14 @@ pub fn close_range(_first: u32, _last: u32) -> Result<(), Error> {
     no("close_range")
 }
 
+pub fn chdir(_path: &CStr) -> Result<(), Error> {
+    no("chdir")
+}
+
+pub fn execve(_path: &CStr, _argv: &[impl AsRef<CStr>], _envp: &[impl AsRef<CStr>]) -> Error {
+    Error::Unsupported("execve")
+}
+
 pub fn open_opath(_path: &CStr) -> Result<OwnedFd, Error> {
     no("open")
 }
@@ -62,8 +70,33 @@ pub fn stage2_exec(
     _argv: &[impl AsRef<CStr>],
     _report: RawFd,
     _sync: RawFd,
+    _spec: Option<RawFd>,
 ) -> Error {
     Error::Unsupported("execveat")
+}
+
+pub fn bind_with(
+    _src: &CStr,
+    _dest: BorrowedFd<'_>,
+    _readonly: bool,
+    _nodev: bool,
+    _noexec: bool,
+) -> Result<(), Error> {
+    no("bind")
+}
+
+pub fn mount_flags(
+    _fd: RawFd,
+    _readonly: bool,
+    _nodev: bool,
+    _noexec: bool,
+    _recursive: bool,
+) -> Result<(), Error> {
+    no("mount_setattr")
+}
+
+pub fn set_no_new_privs() -> Result<(), Error> {
+    no("no_new_privs")
 }
 
 pub fn read_fd(_fd: RawFd, _buf: &mut [u8]) -> Result<usize, Error> {

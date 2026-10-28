@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 nsbx-sys = { path = "../nsbx-sys" }
+libc.workspace = true
+seccompiler = "0.5.0"
 
 [dev-dependencies]
 nsbx-cgroup = { path = "../nsbx-cgroup" }

@@ -15,11 +15,11 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn from_io(op: &'static str, source: io::Error) -> Self {
+    pub fn from_io(op: &'static str, source: io::Error) -> Self {
         Self::Errno { op, source }
     }
 
-    pub(crate) fn last(op: &'static str) -> Self {
+    pub fn last(op: &'static str) -> Self {
         Self::from_io(op, io::Error::last_os_error())
     }
 

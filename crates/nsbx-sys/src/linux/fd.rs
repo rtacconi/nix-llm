@@ -7,6 +7,27 @@ use rustix::fs::{Mode, OFlags, ResolveFlags};
 
 use crate::Error;
 
+pub fn chdir(path: &CStr) -> Result<(), Error> {
+    // SAFETY: `path` is NUL-terminated and only changes this process's cwd.
+    let rc = unsafe { libc::chdir(path.as_ptr()) };
+    if rc < 0 {
+        Err(Error::last("chdir"))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn execve(path: &CStr, argv: &[impl AsRef<CStr>], envp: &[impl AsRef<CStr>]) -> Error {
+    let mut av: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ref().as_ptr()).collect();
+    av.push(std::ptr::null());
+    let mut ev: Vec<*const libc::c_char> = envp.iter().map(|s| s.as_ref().as_ptr()).collect();
+    ev.push(std::ptr::null());
+    // SAFETY: `path`, `argv` and `envp` are NUL-terminated and live for the call.
+    // On success the process image is replaced.
+    unsafe { libc::execve(path.as_ptr(), av.as_ptr(), ev.as_ptr()) };
+    Error::last("execve")
+}
+
 pub fn open_opath(path: &CStr) -> Result<OwnedFd, Error> {
     rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| Error::from_io("open", e.into()))
@@ -45,11 +66,22 @@ pub fn dup2(from: RawFd, to: RawFd) -> Result<(), Error> {
 }
 
 /// Install the keep-list and exec stage 2. Does not return on success.
-pub fn stage2_exec(program: RawFd, argv: &[impl AsRef<CStr>], report: RawFd, sync: RawFd) -> Error {
+pub fn stage2_exec(
+    program: RawFd,
+    argv: &[impl AsRef<CStr>],
+    report: RawFd,
+    sync: RawFd,
+    spec: Option<RawFd>,
+) -> Error {
     if let Err(e) = dup2(report, 3) {
         return e;
     }
     if let Err(e) = dup2(sync, 4) {
+        return e;
+    }
+    if let Some(spec) = spec
+        && let Err(e) = dup2(spec, 5)
+    {
         return e;
     }
     let env: [&CStr; 0] = [];
@@ -123,6 +155,7 @@ pub fn execveat_empty(fd: RawFd, argv: &[impl AsRef<CStr>], envp: &[impl AsRef<C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{CStr, CString};
     use std::os::fd::{AsFd, AsRawFd};
 
     #[test]
@@ -163,6 +196,25 @@ mod tests {
         let mut buf = [0u8; 1];
         let n = read_fd(read.as_raw_fd(), &mut buf).unwrap();
         assert_eq!(&buf[..n], b"z");
+    }
+
+    #[test]
+    fn chdir_round_trip_and_missing_exec_returns() {
+        let before = std::env::current_dir().unwrap();
+        chdir(c"/tmp").unwrap();
+        assert_eq!(
+            std::env::current_dir().unwrap(),
+            std::path::PathBuf::from("/tmp")
+        );
+        let back = CString::new(before.to_str().unwrap()).unwrap();
+        chdir(&back).unwrap();
+        let env: [&CStr; 0] = [];
+        let missing = execve(
+            c"/no/such/nsbx-binary",
+            &[CString::new("nsbx").unwrap()],
+            &env,
+        );
+        assert_eq!(missing.raw_os_error(), Some(libc::ENOENT));
     }
 
     #[test]

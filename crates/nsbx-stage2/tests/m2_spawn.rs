@@ -11,6 +11,10 @@ use nsbx_sys::{CloneFlags, clone3, map_caller, open_opath, pipe, read_fd, stage2
 
 #[test]
 fn child_is_in_the_job_cgroup_and_kill_drains_it() {
+    // The Nix build sandbox has no user systemd session to delegate a cgroup.
+    if std::env::var_os("NIX_BUILD_TOP").is_some() {
+        return;
+    }
     if std::env::var_os("NSBX_DELEGATED").is_none() {
         let exe = std::env::current_exe().expect("test exe");
         let out = Command::new("systemd-run")
@@ -97,6 +101,7 @@ fn spawn(layout: &Layout, name: &str, limits: Limits, release: bool) -> Result<O
                 &[argv0.as_c_str(), argv1.as_c_str()],
                 report,
                 sync,
+                None,
             );
             let _ = write_fd(2, err.to_string().as_bytes());
         },

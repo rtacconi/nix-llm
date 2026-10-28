@@ -228,8 +228,10 @@ dependencies = [
 name = "nsbx-stage2"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nsbx-cgroup",
  "nsbx-sys",
+ "seccompiler",
 ]
 
 [[package]]
@@ -462,6 +464,15 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
