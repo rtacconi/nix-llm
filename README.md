@@ -14,6 +14,7 @@ three parts:
 | Document | Contents |
 |----------|----------|
 | [docs/design.md](docs/design.md) | **The system design**: threat model, architecture, kernel primitives, privilege model and setup ordering, filesystem, network, seccomp/Landlock, runtimes and co-built policy, resources and cancellation, supervisor internals, protocol and API, code layout, testing and verification, observability and benchmarks, failure modes, residual risks, roadmap, decision log |
+| [docs/verification.md](docs/verification.md) | M0: each §4 claim checked against kernel docs, man-pages and the pinned crates, plus experiments E1–E7 |
 | [docs/literature-review.md](docs/literature-review.md) | Findings from 19 papers on LLM-agent sandboxing and privilege control, with citations |
 | [docs/content-safety.md](docs/content-safety.md) | Repository rules that keep the repo free of antivirus false positives |
 
