@@ -102,6 +102,7 @@ fn spawn(layout: &Layout, name: &str, limits: Limits, release: bool) -> Result<O
                 report,
                 sync,
                 None,
+                None,
             );
             let _ = write_fd(2, err.to_string().as_bytes());
         },

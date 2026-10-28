@@ -5,5 +5,6 @@
 
 pub mod frame;
 pub mod msg;
+pub mod status;
 
 pub use frame::{Frame, FrameError, FrameType, MAX_FRAME_LEN, decode, encode};

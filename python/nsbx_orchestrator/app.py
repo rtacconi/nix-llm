@@ -137,7 +137,17 @@ def create_app(jobs: JobManager, auth: TokenAuth, policy: Policy) -> Starlette:
 
     async def health(request: Request) -> Response:
         status = 200 if jobs.connected else 503
-        return JSONResponse({"supervisor_connected": jobs.connected}, status_code=status)
+        return JSONResponse(
+            {
+                "supervisor_connected": jobs.connected,
+                "features": {
+                    "namespace": True,
+                    "egress_proxy": False,
+                    "microvm": False,
+                },
+            },
+            status_code=status,
+        )
 
     return Starlette(
         routes=[

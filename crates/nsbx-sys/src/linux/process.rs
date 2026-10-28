@@ -112,6 +112,64 @@ pub fn wait_pidfd(pidfd: std::os::fd::RawFd) -> Result<Wait, Error> {
     Ok(Wait { status })
 }
 
+pub struct ChildExit {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+/// Duplicate this single-threaded process. `0` is the child.
+pub fn fork_process() -> Result<i32, crate::Error> {
+    // SAFETY: stage 2 is single-threaded when it calls this. `fork` only
+    // duplicates the caller; it does not run another thread's locks.
+    let rc = unsafe { libc::fork() };
+    if rc < 0 {
+        Err(crate::Error::last("fork"))
+    } else {
+        Ok(rc)
+    }
+}
+
+/// Die with a seccomp kill. Pid 1 ignores an ordinary fatal signal, and a
+/// seccomp kill is how a sandboxed workload dies, so the init process uses
+/// the same mechanism after its child was killed.
+pub fn die_by_seccomp() -> Result<(), crate::Error> {
+    crate::set_no_new_privs()?;
+    // BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS.
+    apply_seccomp_filter(&[FilterInsn {
+        code: 0x06,
+        jt: 0,
+        jf: 0,
+        k: 0x8000_0000,
+    }])?;
+    let _ = crate::syscall0(libc::SYS_getpid);
+    Ok(())
+}
+
+pub fn wait_child(pid: i32) -> Result<ChildExit, crate::Error> {
+    let mut status = 0;
+    // SAFETY: `pid` is a child of this process and `status` is a writable int.
+    let rc = unsafe { libc::waitpid(pid, &mut status, 0) };
+    if rc < 0 {
+        return Err(crate::Error::last("waitpid"));
+    }
+    if libc::WIFEXITED(status) {
+        Ok(ChildExit {
+            code: Some(libc::WEXITSTATUS(status)),
+            signal: None,
+        })
+    } else if libc::WIFSIGNALED(status) {
+        Ok(ChildExit {
+            code: None,
+            signal: Some(libc::WTERMSIG(status)),
+        })
+    } else {
+        Ok(ChildExit {
+            code: None,
+            signal: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::fd::AsRawFd;

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 nsbx-sys = { path = "../nsbx-sys" }
 nsbx-policy = { path = "../nsbx-policy" }
+nsbx-proto = { path = "../nsbx-proto" }
 libc.workspace = true
 seccompiler = "0.5.0"
 landlock = "0.4.4"

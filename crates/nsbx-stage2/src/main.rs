@@ -1,5 +1,6 @@
 //! Stage 2. `hold` is the M2 census. `setup` builds the filesystem and execs.
 
+mod collect;
 mod setup;
 
 use std::ffi::CString;
@@ -65,38 +66,82 @@ fn setup_main() {
         Ok(points) => points,
         Err(err) => fail(&err.to_string()),
     };
-    let restricted = if let Some(programs) = programs {
-        let dropped = match pivoted.drop_privileges() {
-            Ok(dropped) => dropped,
-            Err(err) => fail(&err.to_string()),
-        };
-        let locked = match dropped.apply_landlock(&spec) {
-            Ok(locked) => locked,
-            Err(err) => fail(&err.to_string()),
-        };
-        match locked.apply_profile(&programs) {
-            Ok(restricted) => restricted,
-            Err(err) => fail(&err.to_string()),
-        }
-    } else {
-        match pivoted.apply_baseline() {
-            Ok(restricted) => restricted,
-            Err(err) => fail(&err.to_string()),
-        }
-    };
     let mut report = String::new();
     for point in &points {
         report.push_str(point);
         report.push('\n');
     }
     let _ = nsbx_sys::write_fd(3, report.as_bytes());
-    let env = [
-        CString::new("PATH=/bin").expect("env"),
-        CString::new("HOME=/tmp").expect("env"),
-        CString::new("LANG=C").expect("env"),
-    ];
-    let err = restricted.exec_workload(&spec.argv, &env);
-    fail(&err.to_string());
+    for prefix in &spec.collect {
+        let path = format!("/workspace/{prefix}");
+        if let Err(err) = std::fs::create_dir_all(&path) {
+            fail(&err.to_string());
+        }
+    }
+    if spec.production {
+        let mut owned = vec![
+            "/workspace".to_string(),
+            "/tmp".to_string(),
+            "/dev/shm".to_string(),
+        ];
+        for prefix in &spec.collect {
+            owned.push(format!("/workspace/{prefix}"));
+        }
+        for path in owned {
+            let c = CString::new(path).expect("path");
+            if let Err(err) = nsbx_sys::chown_path(&c, 1000, 1000) {
+                fail(&err.to_string());
+            }
+        }
+    }
+    let pid = match nsbx_sys::fork_process() {
+        Ok(pid) => pid,
+        Err(err) => fail(&err.to_string()),
+    };
+    if pid == 0 {
+        let restricted = if let Some(programs) = programs {
+            let dropped = match pivoted.drop_privileges(spec.production) {
+                Ok(dropped) => dropped,
+                Err(err) => fail(&err.to_string()),
+            };
+            let locked = match dropped.apply_landlock(&spec) {
+                Ok(locked) => locked,
+                Err(err) => fail(&err.to_string()),
+            };
+            match locked.apply_profile(&programs) {
+                Ok(restricted) => restricted,
+                Err(err) => fail(&err.to_string()),
+            }
+        } else {
+            match pivoted.apply_baseline() {
+                Ok(restricted) => restricted,
+                Err(err) => fail(&err.to_string()),
+            }
+        };
+        let env = [
+            CString::new("PATH=/bin").expect("env"),
+            CString::new("HOME=/tmp").expect("env"),
+            CString::new("LANG=C").expect("env"),
+        ];
+        let err = restricted.exec_workload(&spec.argv, &env);
+        fail(&err.to_string());
+    }
+    // The workload inherited stdout. Closing it here lets the pipe end when
+    // the workload exits, while this process collects artefacts.
+    let _ = nsbx_sys::close_range(1, 2);
+    let waited = nsbx_sys::wait_child(pid).unwrap_or(nsbx_sys::ChildExit {
+        code: None,
+        signal: None,
+    });
+    let code = waited.code.unwrap_or(99);
+    let items = collect::gather(&spec.collect);
+    if let Ok(bytes) = nsbx_proto::status::encode(code, &items) {
+        let _ = nsbx_sys::write_fd(8, &bytes);
+    }
+    if waited.signal.is_some() {
+        let _ = nsbx_sys::die_by_seccomp();
+    }
+    std::process::exit(code);
 }
 
 fn fail(msg: &str) -> ! {
@@ -140,6 +185,10 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
     let mut profile = None;
     let mut policy_dir = None;
     let mut workspace_exec = false;
+    let mut production = false;
+    let mut collect = Vec::new();
+    let mut proc_full = false;
+    let mut memory_bytes = 0;
     if lines.next().is_some_and(|l| l == "profile") {
         profile = Some(next_line(&mut lines)?);
         if lines.next().is_some_and(|l| l == "policy") {
@@ -147,6 +196,38 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
         }
         if lines.next().is_some_and(|l| l == "workspace_exec") {
             workspace_exec = next_line(&mut lines)? == "true";
+        }
+        while let Some(label) = lines.next() {
+            match label {
+                "identity" => {
+                    let value = next_line(&mut lines)?;
+                    if value == "production" {
+                        production = true;
+                    } else if value != "dev" {
+                        return Err("identity".into());
+                    }
+                }
+                "collect" => {
+                    let n: usize = next_line(&mut lines)?
+                        .parse()
+                        .map_err(|_| "collect count".to_string())?;
+                    if n > 32 {
+                        return Err("collect count".into());
+                    }
+                    for _ in 0..n {
+                        collect.push(next_line(&mut lines)?);
+                    }
+                }
+                "proc" => {
+                    proc_full = next_line(&mut lines)? == "full";
+                    if lines.next().is_some_and(|l| l == "memory_bytes") {
+                        memory_bytes = next_line(&mut lines)?
+                            .parse()
+                            .map_err(|_| "memory_bytes".to_string())?;
+                    }
+                }
+                other => return Err(format!("unexpected spec line {other}")),
+            }
         }
     }
     Ok(Spec {
@@ -157,6 +238,10 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
         profile,
         policy_dir,
         workspace_exec,
+        production,
+        collect,
+        proc_full,
+        memory_bytes,
     })
 }
 

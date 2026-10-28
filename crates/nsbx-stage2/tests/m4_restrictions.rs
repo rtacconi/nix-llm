@@ -51,6 +51,102 @@ fn caps_are_clear_landlock_holds_and_python_runs() {
 }
 
 #[test]
+fn isolation_proc_files_are_synthetic() {
+    if skip_or_delegate() {
+        return;
+    }
+    let python = real_path("python3");
+    let runtime = store_root(&python);
+    let closure = store_closure(&python);
+    let etc = std::env::temp_dir().join("nsbx-m4-proc-etc");
+    let _ = std::fs::remove_dir_all(&etc);
+    std::fs::create_dir_all(&etc).expect("etc");
+    std::fs::write(etc.join("passwd"), "root:x:0:0:root:/:/bin/false\n").expect("passwd");
+    let host = std::fs::read_to_string("/proc/cpuinfo").expect("host cpuinfo");
+    let host_model = host
+        .lines()
+        .find(|l| l.starts_with("model name"))
+        .unwrap_or("model name");
+    let script = "exec(\"print(open('/proc/meminfo').read());print('---');print(open('/proc/cpuinfo').read())\")";
+    let memory = 64 * 1024 * 1024;
+    let tail = format!("proc\nfull\nmemory_bytes\n{memory}\n");
+    let got = run_tail(
+        &python,
+        &runtime,
+        &closure,
+        &etc,
+        "python",
+        &[script],
+        &tail,
+    );
+    assert!(
+        got.exit == Some(0),
+        "exit {:?} stdout {:?} stderr {:?} report {}",
+        got.exit,
+        got.stdout,
+        got.stderr,
+        got.report
+    );
+    assert!(got.stdout.contains("MemTotal: 65536 kB"), "{}", got.stdout);
+    assert!(
+        got.stdout.contains("model name\t: generic"),
+        "{}",
+        got.stdout
+    );
+    assert!(
+        !got.stdout.contains(host_model) || host_model.contains("generic"),
+        "host model leaked: {host_model}"
+    );
+}
+
+#[test]
+fn isolation_collects_workspace_files() {
+    if skip_or_delegate() {
+        return;
+    }
+    let python = real_path("python3");
+    let runtime = store_root(&python);
+    let closure = store_closure(&python);
+    let etc = std::env::temp_dir().join("nsbx-m4-collect-etc");
+    let _ = std::fs::remove_dir_all(&etc);
+    std::fs::create_dir_all(&etc).expect("etc");
+    std::fs::write(etc.join("passwd"), "root:x:0:0:root:/:/bin/false\n").expect("passwd");
+    let script = "exec(\"open('/workspace/out/note','w').write('hi')\\nopen('/workspace/out/flake.nix','w').write('x')\\n\")";
+    let got = run_tail(
+        &python,
+        &runtime,
+        &closure,
+        &etc,
+        "python",
+        &[script],
+        "collect\n1\nout\n",
+    );
+    assert!(
+        got.exit == Some(0),
+        "exit {:?} stdout {:?} stderr {:?} report {}",
+        got.exit,
+        got.stdout,
+        got.stderr,
+        got.report
+    );
+    let decoded = nsbx_proto::status::decode(&got.status).expect("status");
+    assert_eq!(decoded.exit_code, 0);
+    let note = decoded
+        .items
+        .iter()
+        .find(|item| item.path == "out/note")
+        .expect("note");
+    assert_eq!(note.data, b"hi");
+    assert!(!note.risk);
+    let flake = decoded
+        .items
+        .iter()
+        .find(|item| item.path == "out/flake.nix")
+        .expect("flake");
+    assert!(flake.risk);
+}
+
+#[test]
 fn kill_list_holds_for_every_profile() {
     if skip_or_delegate() {
         return;
@@ -126,6 +222,7 @@ struct Out {
     stdout: String,
     stderr: String,
     report: String,
+    status: Vec<u8>,
 }
 
 fn run(
@@ -136,12 +233,24 @@ fn run(
     profile: &str,
     code_and_args: &[&str],
 ) -> Out {
+    run_tail(python, runtime, closure, etc, profile, code_and_args, "")
+}
+
+fn run_tail(
+    python: &str,
+    runtime: &str,
+    closure: &[String],
+    etc: &std::path::Path,
+    profile: &str,
+    code_and_args: &[&str],
+    tail: &str,
+) -> Out {
     // MS_PRIVATE inside a fresh user namespace sometimes returns EPERM. A later
     // identical sandbox succeeds. A filter miss still fails the assertion.
-    let mut last = run_once(python, runtime, closure, etc, profile, code_and_args);
+    let mut last = run_once(python, runtime, closure, etc, profile, code_and_args, tail);
     for _ in 0..2 {
         if last.exit == Some(99) && last.report.contains("MS_PRIVATE") {
-            last = run_once(python, runtime, closure, etc, profile, code_and_args);
+            last = run_once(python, runtime, closure, etc, profile, code_and_args, tail);
         }
     }
     last
@@ -154,6 +263,7 @@ fn run_once(
     etc: &std::path::Path,
     profile: &str,
     code_and_args: &[&str],
+    tail: &str,
 ) -> Out {
     let mut spec = String::new();
     spec.push_str("runtime\n");
@@ -181,6 +291,7 @@ fn run_once(
     spec.push_str("\npolicy\n");
     spec.push_str(POLICY);
     spec.push_str("\nworkspace_exec\nfalse\n");
+    spec.push_str(tail);
 
     let layout = Layout::establish().expect("cgroup");
     let seq = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -201,6 +312,7 @@ fn run_once(
     let (spec_r, spec_w) = pipe().expect("pipe");
     let (out_r, out_w) = pipe().expect("pipe");
     let (err_r, err_w) = pipe().expect("pipe");
+    let (status_r, status_w) = pipe().expect("pipe");
     write_fd(spec_w.as_raw_fd(), spec.as_bytes()).expect("spec");
     drop(spec_w);
     let argv0 = CString::new("nsbx-stage2").expect("argv");
@@ -211,6 +323,7 @@ fn run_once(
     let spec_fd = spec_r.as_raw_fd();
     let stdout = out_w.as_raw_fd();
     let stderr = err_w.as_raw_fd();
+    let status = status_w.as_raw_fd();
     let child = clone3(
         CloneFlags::SANDBOX,
         Some(job.as_fd().as_raw_fd()),
@@ -223,6 +336,7 @@ fn run_once(
                 report,
                 sync,
                 Some(spec_fd),
+                Some(status),
             );
             let _ = write_fd(2, err.to_string().as_bytes());
         },
@@ -233,6 +347,7 @@ fn run_once(
     drop(spec_r);
     drop(out_w);
     drop(err_w);
+    drop(status_w);
     drop(program);
     map_caller(child.pid).expect("map");
     write_fd(sync_w.as_raw_fd(), b"x").expect("sync");
@@ -241,6 +356,7 @@ fn run_once(
     let stdout = String::from_utf8_lossy(&read_to_end(out_r.as_raw_fd())).into_owned();
     let stderr = String::from_utf8_lossy(&read_to_end(err_r.as_raw_fd())).into_owned();
     let report = String::from_utf8_lossy(&read_to_end(report_r.as_raw_fd())).into_owned();
+    let status = read_to_end(status_r.as_raw_fd());
     let _ = job.remove();
     let exit = waited.ok().and_then(|w| w.exit_code());
     let _ = layout;
@@ -249,6 +365,7 @@ fn run_once(
         stdout,
         stderr,
         report,
+        status,
     }
 }
 

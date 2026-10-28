@@ -1,7 +1,7 @@
 //! `close_range`, `openat2` and `execveat(AT_EMPTY_PATH)`.
 
 use std::ffi::CStr;
-use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use rustix::fs::{Mode, OFlags, ResolveFlags};
 
@@ -72,7 +72,14 @@ pub fn stage2_exec(
     report: RawFd,
     sync: RawFd,
     spec: Option<RawFd>,
+    status: Option<RawFd>,
 ) -> Error {
+    // The program descriptor may itself be 3, 4, 5, or 8. Copy it above the
+    // keep-list before those dups replace whatever is there.
+    let program = match dup_above(program, 16) {
+        Ok(fd) => fd,
+        Err(err) => return err,
+    };
     if let Err(e) = dup2(report, 3) {
         return e;
     }
@@ -81,6 +88,11 @@ pub fn stage2_exec(
     }
     if let Some(spec) = spec
         && let Err(e) = dup2(spec, 5)
+    {
+        return e;
+    }
+    if let Some(status) = status
+        && let Err(e) = dup2(status, 8)
     {
         return e;
     }
@@ -150,6 +162,82 @@ pub fn execveat_empty(fd: RawFd, argv: &[impl AsRef<CStr>], envp: &[impl AsRef<C
         );
     }
     Error::last("execveat")
+}
+
+/// `true` when `fd` is readable or hung up. `timeout_ms` of -1 blocks.
+fn dup_above(fd: RawFd, min: i32) -> Result<RawFd, Error> {
+    // SAFETY: F_DUPFD_CLOEXEC copies one caller-owned descriptor to an fd
+    // number at least `min`. Both descriptors stay owned by the caller.
+    let rc = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, min) };
+    if rc < 0 {
+        Err(Error::last("fcntl"))
+    } else {
+        Ok(rc)
+    }
+}
+
+pub fn fd_is_open(fd: RawFd) -> bool {
+    // SAFETY: F_GETFD only reads the descriptor flags of a caller-owned fd.
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    rc >= 0
+}
+
+/// The listening socket systemd passed (`LISTEN_FDS=1`, fd 3).
+///
+/// Systemd marks that descriptor non-blocking. The returned fd is blocking
+/// and owned by the caller.
+pub fn systemd_listen_fd() -> Result<OwnedFd, Error> {
+    let fds = std::env::var("LISTEN_FDS").unwrap_or_default();
+    if fds != "1" {
+        return Err(Error::from_io(
+            "listen",
+            std::io::Error::other(format!("LISTEN_FDS is {fds:?}")),
+        ));
+    }
+    let expected = std::process::id().to_string();
+    let got = std::env::var("LISTEN_PID").unwrap_or_default();
+    if got != expected {
+        return Err(Error::from_io(
+            "listen",
+            std::io::Error::other(format!("LISTEN_PID is {got:?}, want {expected}")),
+        ));
+    }
+    // SAFETY: systemd documents fd 3 as the first listening socket when
+    // LISTEN_FDS is 1 and LISTEN_PID is this process. Taking ownership
+    // matches the socket-activation contract: this process serves it.
+    let fd = unsafe { OwnedFd::from_raw_fd(3) };
+    // SAFETY: F_GETFL/F_SETFL only change the status flags of that owned fd.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(Error::last("fcntl"));
+    }
+    let blocking = flags & !libc::O_NONBLOCK;
+    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, blocking) };
+    if rc < 0 {
+        return Err(Error::last("fcntl"));
+    }
+    // SAFETY: this helper is still single-threaded. Clearing the activation
+    // variables keeps a later child from treating an inherited fd as its own.
+    unsafe {
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_PID");
+    }
+    Ok(fd)
+}
+
+pub fn poll_in(fd: RawFd, timeout_ms: i32) -> Result<bool, Error> {
+    let mut fds = [libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: `fds` is one pollfd for a caller-owned descriptor.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+    if rc < 0 {
+        return Err(Error::last("poll"));
+    }
+    let flags = fds[0].revents;
+    Ok(flags & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0)
 }
 
 #[cfg(test)]

@@ -268,6 +268,8 @@ async def test_environment_endpoint(env: Env) -> None:
     e = r.json()
     assert e["executables"] == ["python3"]
     assert e["network"]["mode"] == "none"
+    assert e["implemented"]["egress_proxy"] is False
+    assert e["implemented"]["microvm"] is False
     assert e["filesystem"]["workdir"] == "/workspace"
     assert (await env.http.get("/v1/profiles/cli-text/environment", headers=hdr())).status_code == 404
 

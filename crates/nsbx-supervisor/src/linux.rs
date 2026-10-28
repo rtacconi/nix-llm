@@ -8,12 +8,14 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use nsbx_core::epoch::{Epoch, Ticket};
 use nsbx_policy::bundle::PolicyBundle;
 use nsbx_policy::narrow::Principal;
+use nsbx_policy::profile::{Backend, ProcMode};
 use nsbx_proto::frame::{self, FrameType, HEADER_LEN, MAX_FRAME_LEN};
 use nsbx_proto::msg::{
-    self, Accepted, Cleanup, ErrorCategory, ErrorV1, Hello, HelloAck, Rejected, ResultV1, Started,
-    Stream, Submit, TerminationReason,
+    self, Accepted, ArtifactInfo, Cleanup, ErrorCategory, ErrorV1, Hello, HelloAck, Rejected,
+    ResultV1, Started, Stream, Submit, TerminationReason,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde::Serialize;
@@ -28,6 +30,7 @@ struct Config {
     seccomp: Option<PathBuf>,
     principals: Option<PathBuf>,
     etc: Option<PathBuf>,
+    idmap: Option<PathBuf>,
     runtimes: BTreeMap<String, String>,
     check: bool,
     strict: bool,
@@ -85,15 +88,16 @@ pub fn run() -> Result<(), String> {
             continue;
         }
         stream.set_nonblocking(true).map_err(|e| e.to_string())?;
-        if let Err(err) = serve(
-            &stream,
-            &policy,
-            &seccomp,
-            &principals,
-            &etc,
-            &cfg.runtimes,
-            &layout,
-        ) {
+        let host = Host {
+            policy: &policy,
+            seccomp: &seccomp,
+            principals: &principals,
+            etc: &etc,
+            runtimes: &cfg.runtimes,
+            idmap: cfg.idmap.as_deref(),
+            layout: &layout,
+        };
+        if let Err(err) = serve(&stream, &host) {
             eprintln!("connection: {err}");
         }
     }
@@ -136,15 +140,7 @@ fn ensure_delegated() -> Result<(), String> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn serve(
-    stream: &UnixStream,
-    policy: &PolicyBundle,
-    seccomp: &Path,
-    principals: &BTreeMap<String, Principal>,
-    etc: &Path,
-    runtimes: &BTreeMap<String, String>,
-    layout: &nsbx_cgroup::Layout,
-) -> Result<(), String> {
+fn serve(stream: &UnixStream, host: &Host<'_>) -> Result<(), String> {
     let fd = stream.as_raw_fd();
     let mut buf = Vec::new();
     let mut hello = false;
@@ -215,7 +211,7 @@ fn serve(
                         proto: msg::PROTOCOL_VERSION,
                         supervisor: "nsbx-supervisor/0.1".into(),
                         features: serde_json::Map::new(),
-                        profiles: policy.names().map(str::to_string).collect(),
+                        profiles: host.policy.names().map(str::to_string).collect(),
                     };
                     send_json(fd, FrameType::HelloAck, &ack)?;
                     hello = true;
@@ -235,15 +231,7 @@ fn serve(
                         send_error(fd, "job_id was already used with a different request")?;
                         return Ok(());
                     }
-                    let host = Host {
-                        policy,
-                        seccomp,
-                        principals,
-                        etc,
-                        runtimes,
-                        layout,
-                    };
-                    live = Some(start_job(fd, &submit, &host)?);
+                    live = Some(start_job(fd, &submit, host)?);
                 }
                 FrameType::Credit => {
                     let credit = msg::Credit::parse(&payload).map_err(|e| e.to_string())?;
@@ -259,6 +247,7 @@ fn serve(
                     if let Some(job) = live.as_mut()
                         && job.id == cancel.job_id.to_string()
                     {
+                        job.epoch.bump();
                         job.cancel = Some(
                             Instant::now() + Duration::from_millis(u64::from(cancel.grace_ms)),
                         );
@@ -284,7 +273,12 @@ struct Live {
     stdout_bytes: u64,
     stderr_bytes: u64,
     started: Instant,
+    wall_at: Instant,
+    wall_hit: bool,
+    epoch: Epoch,
+    ticket: Ticket,
     cancel: Option<Instant>,
+    sandbox_done: bool,
     out_open: bool,
     err_open: bool,
     report: Vec<u8>,
@@ -292,6 +286,7 @@ struct Live {
     result: Vec<u8>,
     runtime: String,
     truncated: bool,
+    warden: std::os::fd::OwnedFd,
 }
 
 struct Host<'a> {
@@ -300,6 +295,7 @@ struct Host<'a> {
     principals: &'a BTreeMap<String, Principal>,
     etc: &'a Path,
     runtimes: &'a BTreeMap<String, String>,
+    idmap: Option<&'a Path>,
     layout: &'a nsbx_cgroup::Layout,
 }
 
@@ -310,6 +306,7 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         principals,
         etc,
         runtimes,
+        idmap: idmap_sock,
         layout,
     } = host;
     let Some(principal) = principals.get(&submit.principal) else {
@@ -356,6 +353,14 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
     let profile = policy
         .get(profile_name)
         .ok_or_else(|| format!("unknown profile {profile_name}"))?;
+    if profile.backend != Backend::Namespace {
+        reject(fd, submit, "unsupported_feature", "backend", "microvm")?;
+        return Err("microvm backend is not implemented".into());
+    }
+    if effective["network"].as_str() == Some("egress-proxy") {
+        reject(fd, submit, "unsupported_feature", "network", "egress-proxy")?;
+        return Err("egress proxy is not implemented".into());
+    }
     let runtime = runtimes
         .get(profile_name)
         .ok_or_else(|| format!("no --runtime for {profile_name}"))?;
@@ -391,9 +396,13 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
     let memory = effective["limits"]["memory_bytes"]
         .as_u64()
         .unwrap_or(512 * 1024 * 1024);
+    let wall_ms = effective["limits"]["wall_ms"].as_u64().unwrap_or(60_000);
+    let output_cap = effective["limits"]["output_bytes"]
+        .as_u64()
+        .unwrap_or(1024 * 1024);
     let pids = effective["limits"]["pids"].as_u64().unwrap_or(64);
     let pids = u32::try_from(pids).unwrap_or(64);
-    let spec = render_spec(
+    let mut spec = render_spec(
         &root,
         &etc.display().to_string(),
         &argv,
@@ -402,6 +411,12 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         seccomp,
         profile.workspace_exec,
     );
+    append_identity(&mut spec, &profile.collect_prefixes)?;
+    if profile.proc == ProcMode::Full {
+        spec.push_str("proc\nfull\nmemory_bytes\n");
+        spec.push_str(&memory.to_string());
+        spec.push('\n');
+    }
     send_json(
         fd,
         FrameType::Accepted,
@@ -411,7 +426,32 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         },
     )?;
     let started = Instant::now();
-    let sandbox = spawn::spawn(layout, "job", &spec, memory, pids.max(1))?;
+    let map = if dev_mode() {
+        spawn::IdMap::Caller
+    } else {
+        spawn::IdMap::Slot { base: 2_000_000 }
+    };
+    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1), map, *idmap_sock)?;
+    let warden = match crate::warden::spawn(
+        started_box.stdout,
+        started_box.stderr,
+        started_box.status,
+        output_cap,
+    ) {
+        Ok(warden) => warden,
+        Err(err) => {
+            let _ = started_box.job.kill();
+            return Err(err);
+        }
+    };
+    let sandbox = Sandbox {
+        stdout: warden.stdout,
+        stderr: warden.stderr,
+        report: started_box.report,
+        status: warden.status,
+        pidfd: started_box.pidfd,
+        job: started_box.job,
+    };
     let setup_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     send_json(
         fd,
@@ -421,6 +461,8 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
             setup_us,
         },
     )?;
+    let epoch = Epoch::new();
+    let ticket = epoch.ticket();
     Ok(Live {
         id: submit.job_id.to_string(),
         hash: submit.request_hash.clone(),
@@ -430,7 +472,12 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         stdout_bytes: 0,
         stderr_bytes: 0,
         started,
+        wall_at: started + Duration::from_millis(wall_ms),
+        wall_hit: false,
+        epoch,
+        ticket,
         cancel: None,
+        sandbox_done: false,
         out_open: true,
         err_open: true,
         report: Vec::new(),
@@ -438,10 +485,15 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         result: Vec::new(),
         runtime: root,
         truncated: false,
+        warden: warden.pidfd,
     })
 }
 
 fn pump(sock: i32, job: &mut Live) -> Result<(), String> {
+    if Instant::now() >= job.wall_at {
+        job.wall_hit = true;
+        let _ = job.box_.job.kill();
+    }
     if let Some(deadline) = job.cancel
         && Instant::now() >= deadline
     {
@@ -480,14 +532,10 @@ fn pump(sock: i32, job: &mut Live) -> Result<(), String> {
         let _ = read_some(job.box_.report.as_raw_fd(), &mut job.report)?;
     }
     index += 1;
-    if ready_flags[index] && !job.finished {
-        // The process has exited. Take whatever output the window still allows.
-        if job.out_open {
-            job.out_open = drain(sock, job, true)?;
-        }
-        if job.err_open {
-            job.err_open = drain(sock, job, false)?;
-        }
+    if ready_flags[index] {
+        job.sandbox_done = true;
+    }
+    if job.sandbox_done && !job.out_open && !job.err_open && !job.finished {
         finish(sock, job)?;
     }
     Ok(())
@@ -516,6 +564,9 @@ fn drain(sock: i32, job: &mut Live, stdout: bool) -> Result<bool, String> {
         match nsbx_sys::read_fd(fd, &mut buf[..want]) {
             Ok(0) => return Ok(false),
             Ok(n) => {
+                if job.epoch.check(job.ticket).is_err() {
+                    continue;
+                }
                 let stream = if stdout {
                     Stream::Stdout
                 } else {
@@ -538,21 +589,33 @@ fn drain(sock: i32, job: &mut Live, stdout: bool) -> Result<bool, String> {
 
 fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     let waited = nsbx_sys::wait_pidfd(job.box_.pidfd.as_raw_fd()).map_err(|e| e.to_string())?;
+    let _ = nsbx_sys::wait_pidfd(job.warden.as_raw_fd());
+    let mut status_buf = Vec::new();
+    loop {
+        let mut tmp = [0u8; 4096];
+        match nsbx_sys::read_fd(job.box_.status.as_raw_fd(), &mut tmp) {
+            Ok(0) => break,
+            Ok(n) => status_buf.extend_from_slice(&tmp[..n]),
+            Err(_) => break,
+        }
+        if status_buf.len() > 1_048_576 {
+            break;
+        }
+    }
+    let artifacts = parse_artifacts(&status_buf);
     let _ = read_some(job.box_.report.as_raw_fd(), &mut job.report);
     let report = String::from_utf8_lossy(&job.report);
-    let (reason, exit_code) = if report.starts_with("ERR") {
-        (TerminationReason::SetupFailed, waited.exit_code())
-    } else if job.cancel.is_some() && waited.exit_code().is_none() {
-        (TerminationReason::Cancelled, None)
-    } else if let Some(code) = waited.exit_code() {
-        (TerminationReason::Exited, Some(code))
-    } else {
-        (TerminationReason::Signaled, None)
-    };
+    let failure = setup_failure(&report);
+    let (reason, exit_code) = termination(
+        failure.is_some(),
+        job.wall_hit,
+        job.cancel.is_some(),
+        waited.exit_code(),
+    );
     let result = ResultV1 {
         job_id: job.id.parse().map_err(|_| "job id".to_string())?,
         reason,
-        stage: report.starts_with("ERR").then(|| report.trim().to_string()),
+        stage: failure,
         exit_code,
         signal: None,
         wall_ms: u64::try_from(job.started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -564,7 +627,7 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
         stdout_bytes: job.stdout_bytes,
         stderr_bytes: job.stderr_bytes,
         output_truncated: job.truncated,
-        artifacts: Vec::new(),
+        artifacts,
         cleanup: Cleanup::Ok,
         runtime: job.runtime.clone(),
         policy_hash: job.hash.clone(),
@@ -578,6 +641,34 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     job.finished = true;
     let _ = job.box_.job.kill();
     Ok(())
+}
+
+/// The mount census is written before a later step can fail, so the error
+/// line is not always the first line of the report.
+fn setup_failure(report: &str) -> Option<String> {
+    report
+        .lines()
+        .find(|line| line.starts_with("ERR "))
+        .map(str::to_string)
+}
+
+fn termination(
+    setup_failed: bool,
+    wall: bool,
+    cancel: bool,
+    exit: Option<i32>,
+) -> (TerminationReason, Option<i32>) {
+    if setup_failed {
+        (TerminationReason::SetupFailed, exit)
+    } else if wall {
+        (TerminationReason::WallTimeout, None)
+    } else if cancel && exit.is_none() {
+        (TerminationReason::Cancelled, None)
+    } else if let Some(code) = exit {
+        (TerminationReason::Exited, Some(code))
+    } else {
+        (TerminationReason::Signaled, None)
+    }
 }
 
 fn render_spec(
@@ -615,6 +706,65 @@ fn render_spec(
     spec.push_str("\nworkspace_exec\n");
     spec.push_str(if workspace_exec { "true\n" } else { "false\n" });
     spec
+}
+
+fn append_identity(
+    spec: &mut String,
+    prefixes: &[nsbx_policy::path::RelPath],
+) -> Result<(), String> {
+    spec.push_str("identity\n");
+    spec.push_str(if dev_mode() { "dev\n" } else { "production\n" });
+    spec.push_str("collect\n");
+    spec.push_str(&prefixes.len().to_string());
+    spec.push('\n');
+    for prefix in prefixes {
+        let text = prefix.to_string();
+        if text.contains('\n') {
+            return Err("collect prefix contains a newline".into());
+        }
+        spec.push_str(&text);
+        spec.push('\n');
+    }
+    Ok(())
+}
+
+fn parse_artifacts(buf: &[u8]) -> Vec<ArtifactInfo> {
+    let text = String::from_utf8_lossy(buf);
+    let Some(line) = text.lines().next() else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let Some(list) = value.get("artifacts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in list {
+        let Some(path) = item.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(size) = item.get("size").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(sha) = item.get("sha256").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let risk = item
+            .get("host_executable_risk")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        out.push(ArtifactInfo {
+            path: path.to_string(),
+            size,
+            sha256: sha.to_string(),
+            host_executable_risk: risk,
+        });
+    }
+    out
 }
 
 fn reject(
@@ -729,6 +879,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
         seccomp: None,
         principals: None,
         etc: None,
+        idmap: None,
         runtimes: BTreeMap::new(),
         check: false,
         strict: false,
@@ -750,6 +901,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
             "--seccomp" => cfg.seccomp = Some(PathBuf::from(next(&mut i)?)),
             "--principals" => cfg.principals = Some(PathBuf::from(next(&mut i)?)),
             "--etc" => cfg.etc = Some(PathBuf::from(next(&mut i)?)),
+            "--idmap" => cfg.idmap = Some(PathBuf::from(next(&mut i)?)),
             "--runtime" => {
                 let value = next(&mut i)?;
                 let (name, path) = value
@@ -759,7 +911,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
             }
             "--help" => {
                 println!(
-                    "nsbx-supervisor --socket PATH --policy DIR --seccomp DIR --principals FILE --etc DIR --runtime NAME=STORE [--check] [--strict]"
+                    "nsbx-supervisor --socket PATH --policy DIR --seccomp DIR --principals FILE --etc DIR --runtime NAME=STORE [--idmap SOCK] [--check] [--strict]"
                 );
                 std::process::exit(0);
             }
@@ -797,4 +949,42 @@ fn read_sysctl(path: &str) -> Result<i64, String> {
     text.trim()
         .parse()
         .map_err(|_| format!("not an integer: {text}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_timeout_outranks_a_signal() {
+        let (reason, code) = termination(false, true, true, None);
+        assert_eq!(reason, TerminationReason::WallTimeout);
+        assert_eq!(code, None);
+    }
+
+    #[test]
+    fn an_error_after_the_mount_census_is_setup_failure() {
+        let report = "/\n/tmp\nERR chown: Operation not permitted (os error 1)\n";
+        let failure = setup_failure(report);
+        assert!(failure.is_some());
+        let (reason, code) = termination(failure.is_some(), false, false, Some(99));
+        assert_eq!(reason, TerminationReason::SetupFailed);
+        assert_eq!(code, Some(99));
+    }
+
+    #[test]
+    fn idmap_socket_is_optional() {
+        let cfg = parse(["--idmap".into(), "/run/nsbx-idmap.sock".into()].into_iter()).unwrap();
+        assert_eq!(
+            cfg.idmap.as_deref().and_then(|p| p.to_str()),
+            Some("/run/nsbx-idmap.sock")
+        );
+    }
+
+    #[test]
+    fn a_clean_exit_stays_exited() {
+        let (reason, code) = termination(false, false, false, Some(0));
+        assert_eq!(reason, TerminationReason::Exited);
+        assert_eq!(code, Some(0));
+    }
 }

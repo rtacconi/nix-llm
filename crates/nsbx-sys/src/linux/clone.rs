@@ -1,7 +1,7 @@
 //! `clone3` and the single-uid map an unprivileged parent is allowed to write.
 
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::Error;
 
@@ -122,6 +122,110 @@ pub fn map_caller(pid: i32) -> Result<(), Error> {
     Ok(())
 }
 
+/// Two-range map: ns 0 → `base`, ns 1000 → `base + 1000` (design §5.2).
+/// The writer needs `CAP_SETUID` and `CAP_SETGID` in the parent namespace.
+/// `base` must be the child's current host uid. A mismatch leaves the child
+/// unmapped, and it loses every capability in the new namespace.
+pub fn map_slot(pid: i32, base: u32) -> Result<(), Error> {
+    let high = base
+        .checked_add(1000)
+        .ok_or_else(|| Error::from_io("uid map", io::Error::other("slot base overflows u32")))?;
+    map_ranges(pid, base, high)
+}
+
+/// Namespace uid 0 → `ns0_host`, namespace uid 1000 → `workload_host`.
+/// `ns0_host` has to be the child's current host uid (see [`map_slot`]).
+///
+/// This does not write `setgroups`. Opening that file needs `CAP_SYS_ADMIN`
+/// in the new user namespace, and the idmap helper's bounding set is only
+/// `CAP_SETUID` and `CAP_SETGID`. A writer with `CAP_SETGID` in the parent
+/// namespace can write `gid_map` directly.
+pub fn map_ranges(pid: i32, ns0_host: u32, workload_host: u32) -> Result<(), Error> {
+    if ns0_host == workload_host {
+        return Err(Error::from_io(
+            "uid map",
+            io::Error::other("uid ranges overlap"),
+        ));
+    }
+    let body = format!("0 {ns0_host} 1\n1000 {workload_host} 1\n");
+    let write = |name: &str, text: &str| -> Result<(), Error> {
+        std::fs::write(format!("/proc/{pid}/{name}"), text).map_err(|e| {
+            Error::from_io("uid map", io::Error::new(e.kind(), format!("{name}: {e}")))
+        })
+    };
+    write("gid_map", &body)?;
+    write("uid_map", &body)?;
+    Ok(())
+}
+
+/// Root-only check that a two-range map is what the child observes.
+pub fn prove_slot_map() -> Result<(), Error> {
+    if crate::euid() != 0 {
+        return Err(Error::from_io("uid map", io::Error::other("euid is not 0")));
+    }
+    let (out_r, out_w) = crate::pipe()?;
+    let (sync_r, sync_w) = crate::pipe()?;
+    let out_w_fd = out_w.as_raw_fd();
+    let sync_r_fd = sync_r.as_raw_fd();
+    let child = clone3(CloneFlags::NEWUSER | CloneFlags::PIDFD, None, move || {
+        let mut byte = [0u8; 1];
+        let _ = crate::read_fd(sync_r_fd, &mut byte);
+        let text = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        let _ = crate::write_fd(out_w_fd, text.as_bytes());
+    })?;
+    let parent = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
+    if ppid(child.pid)? != parent {
+        return Err(Error::from_io(
+            "ppid",
+            io::Error::other("child is not our child"),
+        ));
+    }
+    map_slot(child.pid, 2_000_000)?;
+    crate::write_fd(sync_w.as_raw_fd(), b"x")?;
+    drop(sync_w);
+    drop(out_w);
+    let waited = crate::wait_pidfd(child.pidfd.as_raw_fd())?;
+    if !waited.exited() {
+        return Err(Error::from_io(
+            "uid map",
+            io::Error::other("child did not exit"),
+        ));
+    }
+    let mut buf = vec![0u8; 256];
+    let n = crate::read_fd(out_r.as_raw_fd(), &mut buf)?;
+    let text = String::from_utf8_lossy(&buf[..n]);
+    if map_has_range(&text, 0, 2_000_000) && map_has_range(&text, 1000, 2_001_000) {
+        Ok(())
+    } else {
+        Err(Error::from_io(
+            "uid map",
+            io::Error::other(format!("map was {text:?}")),
+        ))
+    }
+}
+
+fn map_has_range(text: &str, ns: u32, host: u32) -> bool {
+    text.lines().any(|line| {
+        let mut nums = line
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok());
+        nums.next() == Some(ns) && nums.next() == Some(host) && nums.next() == Some(1)
+    })
+}
+
+pub fn ppid(pid: i32) -> Result<i32, Error> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .map_err(|e| Error::from_io("ppid", io::Error::new(e.kind(), format!("status: {e}"))))?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("PPid:") {
+            return rest.trim().parse::<i32>().map_err(|_| {
+                Error::from_io("ppid", io::Error::other(format!("bad PPid line {line}")))
+            });
+        }
+    }
+    Err(Error::from_io("ppid", io::Error::other("PPid missing")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +268,24 @@ mod tests {
         unsafe {
             libc::close(read);
             libc::close(write);
+        }
+    }
+
+    #[test]
+    fn padded_uid_map_still_matches() {
+        let text = "         0    2000000          1\n      1000    2001000          1\n";
+        assert!(map_has_range(text, 0, 2_000_000));
+        assert!(map_has_range(text, 1000, 2_001_000));
+        assert!(!map_has_range(text, 0, 1));
+    }
+
+    #[test]
+    fn slot_map_is_refused_without_host_caps() {
+        let result = prove_slot_map();
+        if crate::euid() == 0 {
+            result.expect("slot map");
+        } else {
+            assert!(result.is_err(), "{result:?}");
         }
     }
 

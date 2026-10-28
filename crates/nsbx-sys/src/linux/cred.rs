@@ -30,6 +30,54 @@ struct Data {
 /// Clear the bounding, ambient, inheritable, permitted and effective sets,
 /// lock securebits, and set `NO_NEW_PRIVS`. The caller stays uid 0.
 pub fn drop_dev_privileges() -> Result<(), Error> {
+    let hdr = lock_privilege_bits()?;
+    zero_caps(&hdr)?;
+    crate::set_no_new_privs()
+}
+
+/// Become namespace uid 1000. The caller must already be mapped to that uid.
+/// Securebits are locked first, while `CAP_SETUID` is still held, and the uid
+/// change itself clears the permitted set because `NO_SETUID_FIXUP` is off.
+pub fn assume_workload_uid() -> Result<(), Error> {
+    let hdr = lock_privilege_bits()?;
+    setgroups_none()?;
+    // SAFETY: the three ids are the workload uid. This only affects the caller,
+    // and only after `lock_privilege_bits` has kept `CAP_SETUID`.
+    let rc = unsafe { libc::setresgid(1000, 1000, 1000) };
+    if rc < 0 {
+        return Err(Error::last("setresgid"));
+    }
+    // SAFETY: same as `setresgid`, for the workload uid.
+    let rc = unsafe { libc::setresuid(1000, 1000, 1000) };
+    if rc < 0 {
+        return Err(Error::last("setresuid"));
+    }
+    if !caps_are_clear(&hdr)? {
+        zero_caps(&hdr)?;
+    }
+    if !caps_are_clear(&hdr)? {
+        return Err(Error::from_io(
+            "capset",
+            std::io::Error::other("capabilities survived the uid change"),
+        ));
+    }
+    crate::set_no_new_privs()
+}
+
+/// Change the owner of one path. Used for the writable tmpfs mounts before
+/// the workload uid takes over.
+pub fn chown_path(path: &std::ffi::CStr, uid: u32, gid: u32) -> Result<(), Error> {
+    // SAFETY: `path` is NUL-terminated and names a path in the caller's mount
+    // namespace. The call only changes that inode's owner.
+    let rc = unsafe { libc::chown(path.as_ptr(), uid, gid) };
+    if rc < 0 {
+        Err(Error::last("chown"))
+    } else {
+        Ok(())
+    }
+}
+
+fn lock_privilege_bits() -> Result<Hdr, Error> {
     for cap in 0..64 {
         // SAFETY: the capability index is a small integer. EINVAL ends the
         // walk once the kernel has no further defined capabilities.
@@ -81,17 +129,54 @@ pub fn drop_dev_privileges() -> Result<(), Error> {
     if rc < 0 {
         return Err(Error::last("PR_SET_SECUREBITS"));
     }
+    Ok(hdr)
+}
+
+fn zero_caps(hdr: &Hdr) -> Result<(), Error> {
     let zero = [Data {
         effective: 0,
         permitted: 0,
         inheritable: 0,
     }; 2];
-    // SAFETY: same capset ABI, now with every set zero. The caller stays uid 0.
-    let rc = unsafe { libc::syscall(libc::SYS_capset, &hdr, zero.as_ptr()) };
+    // SAFETY: same capset ABI, now with every set zero.
+    let rc = unsafe { libc::syscall(libc::SYS_capset, hdr, zero.as_ptr()) };
     if rc < 0 {
-        return Err(Error::last("capset"));
+        Err(Error::last("capset"))
+    } else {
+        Ok(())
     }
-    crate::set_no_new_privs()
+}
+
+fn caps_are_clear(hdr: &Hdr) -> Result<bool, Error> {
+    let mut data = [Data {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    // SAFETY: `hdr` and `data` match the capget ABI. The call only reads.
+    let rc = unsafe { libc::syscall(libc::SYS_capget, hdr, data.as_mut_ptr()) };
+    if rc < 0 {
+        return Err(Error::last("capget"));
+    }
+    Ok(data
+        .iter()
+        .all(|word| word.effective == 0 && word.permitted == 0 && word.inheritable == 0))
+}
+
+fn setgroups_none() -> Result<(), Error> {
+    // SAFETY: a count of zero clears the supplementary groups. A user
+    // namespace that already wrote `deny` returns EPERM, which means the
+    // groups cannot be raised either.
+    let rc = unsafe { libc::syscall(libc::SYS_setgroups, 0isize, std::ptr::null::<libc::gid_t>()) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EPERM) {
+        Ok(())
+    } else {
+        Err(Error::from_io("setgroups", err))
+    }
 }
 
 /// Invoke a syscall with six zero arguments. Used by the probe. A seccomp kill

@@ -66,6 +66,19 @@ pub fn load_sources(dir: &Path) -> Result<BTreeMap<String, SeccompSource>, Compi
     Ok(out)
 }
 
+/// Stable fingerprint of the stacked programs. A one-bit change moves it.
+pub fn fingerprint(programs: &[BpfProgram]) -> u64 {
+    let mut state = crate::hash::new();
+    for prog in programs {
+        for inst in prog {
+            crate::hash::mix(&mut state, &inst.code.to_le_bytes());
+            crate::hash::mix(&mut state, &[inst.jt, inst.jf]);
+            crate::hash::mix(&mut state, &inst.k.to_le_bytes());
+        }
+    }
+    state
+}
+
 pub fn compile(profile: &ResolvedSeccomp) -> Result<Vec<BpfProgram>, CompileError> {
     let arch = TargetArch::try_from(std::env::consts::ARCH).map_err(|_| CompileError::Arch)?;
     let mut programs = vec![x32_program()];
@@ -606,31 +619,11 @@ mod tests {
         assert_eq!(first[1][2].k, RET_KILL);
         let text = format!("{first:?}");
         assert!(text.contains("clone") || first.len() >= 5, "{text}");
-        assert_eq!(fingerprint(&first), fingerprint(&second));
-        // Locked after the first successful compile on this toolchain.
-        // The assertion message carries the value when the compiler changes.
         let fp = fingerprint(&first);
-        assert_eq!(fp, fp, "python bpf fingerprint {fp:#x}");
-    }
-
-    fn fingerprint(programs: &[BpfProgram]) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for prog in programs {
-            for inst in prog {
-                for b in inst.code.to_le_bytes() {
-                    h ^= u64::from(b);
-                    h = h.wrapping_mul(0x100_0000_01b3);
-                }
-                h ^= u64::from(inst.jt);
-                h = h.wrapping_mul(0x100_0000_01b3);
-                h ^= u64::from(inst.jf);
-                h = h.wrapping_mul(0x100_0000_01b3);
-                for b in inst.k.to_le_bytes() {
-                    h ^= u64::from(b);
-                    h = h.wrapping_mul(0x100_0000_01b3);
-                }
-            }
-        }
-        h
+        assert_eq!(fp, fingerprint(&second));
+        assert_ne!(fp, 0);
+        let mut changed = first.clone();
+        changed[0][0].k ^= 1;
+        assert_ne!(fingerprint(&changed), fp);
     }
 }

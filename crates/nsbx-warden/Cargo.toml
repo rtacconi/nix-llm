@@ -1,0 +1,19 @@
+[package]
+name = "nsbx-warden"
+description = "Per-job pipe forwarder with an empty Landlock ruleset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nsbx-proto = { path = "../nsbx-proto" }
+nsbx-sys = { path = "../nsbx-sys" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.4"
+libc.workspace = true
+seccompiler = "0.5.0"
+
+[lints]
+workspace = true

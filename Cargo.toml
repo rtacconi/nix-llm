@@ -8,6 +8,9 @@ members = [
     "crates/nsbx-cgroup",
     "crates/nsbx-stage2",
     "crates/nsbx-supervisor",
+    "crates/nsbx-warden",
+    "crates/nsbx-idmap",
+    "crates/nsbx-probe",
     "crates/nsbx-pyo3",
 ]
 # The Python binding needs a Python 3.12 interpreter to build; it is built by
@@ -20,6 +23,9 @@ default-members = [
     "crates/nsbx-cgroup",
     "crates/nsbx-stage2",
     "crates/nsbx-supervisor",
+    "crates/nsbx-warden",
+    "crates/nsbx-idmap",
+    "crates/nsbx-probe",
 ]
 
 [workspace.package]
