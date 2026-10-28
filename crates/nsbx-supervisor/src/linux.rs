@@ -30,6 +30,7 @@ struct Config {
     seccomp: Option<PathBuf>,
     principals: Option<PathBuf>,
     etc: Option<PathBuf>,
+    idmap: Option<PathBuf>,
     runtimes: BTreeMap<String, String>,
     check: bool,
     strict: bool,
@@ -87,15 +88,16 @@ pub fn run() -> Result<(), String> {
             continue;
         }
         stream.set_nonblocking(true).map_err(|e| e.to_string())?;
-        if let Err(err) = serve(
-            &stream,
-            &policy,
-            &seccomp,
-            &principals,
-            &etc,
-            &cfg.runtimes,
-            &layout,
-        ) {
+        let host = Host {
+            policy: &policy,
+            seccomp: &seccomp,
+            principals: &principals,
+            etc: &etc,
+            runtimes: &cfg.runtimes,
+            idmap: cfg.idmap.as_deref(),
+            layout: &layout,
+        };
+        if let Err(err) = serve(&stream, &host) {
             eprintln!("connection: {err}");
         }
     }
@@ -138,15 +140,7 @@ fn ensure_delegated() -> Result<(), String> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn serve(
-    stream: &UnixStream,
-    policy: &PolicyBundle,
-    seccomp: &Path,
-    principals: &BTreeMap<String, Principal>,
-    etc: &Path,
-    runtimes: &BTreeMap<String, String>,
-    layout: &nsbx_cgroup::Layout,
-) -> Result<(), String> {
+fn serve(stream: &UnixStream, host: &Host<'_>) -> Result<(), String> {
     let fd = stream.as_raw_fd();
     let mut buf = Vec::new();
     let mut hello = false;
@@ -217,7 +211,7 @@ fn serve(
                         proto: msg::PROTOCOL_VERSION,
                         supervisor: "nsbx-supervisor/0.1".into(),
                         features: serde_json::Map::new(),
-                        profiles: policy.names().map(str::to_string).collect(),
+                        profiles: host.policy.names().map(str::to_string).collect(),
                     };
                     send_json(fd, FrameType::HelloAck, &ack)?;
                     hello = true;
@@ -237,15 +231,7 @@ fn serve(
                         send_error(fd, "job_id was already used with a different request")?;
                         return Ok(());
                     }
-                    let host = Host {
-                        policy,
-                        seccomp,
-                        principals,
-                        etc,
-                        runtimes,
-                        layout,
-                    };
-                    live = Some(start_job(fd, &submit, &host)?);
+                    live = Some(start_job(fd, &submit, host)?);
                 }
                 FrameType::Credit => {
                     let credit = msg::Credit::parse(&payload).map_err(|e| e.to_string())?;
@@ -309,6 +295,7 @@ struct Host<'a> {
     principals: &'a BTreeMap<String, Principal>,
     etc: &'a Path,
     runtimes: &'a BTreeMap<String, String>,
+    idmap: Option<&'a Path>,
     layout: &'a nsbx_cgroup::Layout,
 }
 
@@ -319,6 +306,7 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         principals,
         etc,
         runtimes,
+        idmap: idmap_sock,
         layout,
     } = host;
     let Some(principal) = principals.get(&submit.principal) else {
@@ -438,12 +426,12 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         },
     )?;
     let started = Instant::now();
-    let idmap = if dev_mode() {
+    let map = if dev_mode() {
         spawn::IdMap::Caller
     } else {
         spawn::IdMap::Slot { base: 2_000_000 }
     };
-    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1), idmap)?;
+    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1), map, *idmap_sock)?;
     let warden = match crate::warden::spawn(
         started_box.stdout,
         started_box.stderr,
@@ -891,6 +879,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
         seccomp: None,
         principals: None,
         etc: None,
+        idmap: None,
         runtimes: BTreeMap::new(),
         check: false,
         strict: false,
@@ -912,6 +901,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
             "--seccomp" => cfg.seccomp = Some(PathBuf::from(next(&mut i)?)),
             "--principals" => cfg.principals = Some(PathBuf::from(next(&mut i)?)),
             "--etc" => cfg.etc = Some(PathBuf::from(next(&mut i)?)),
+            "--idmap" => cfg.idmap = Some(PathBuf::from(next(&mut i)?)),
             "--runtime" => {
                 let value = next(&mut i)?;
                 let (name, path) = value
@@ -921,7 +911,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Config, String> {
             }
             "--help" => {
                 println!(
-                    "nsbx-supervisor --socket PATH --policy DIR --seccomp DIR --principals FILE --etc DIR --runtime NAME=STORE [--check] [--strict]"
+                    "nsbx-supervisor --socket PATH --policy DIR --seccomp DIR --principals FILE --etc DIR --runtime NAME=STORE [--idmap SOCK] [--check] [--strict]"
                 );
                 std::process::exit(0);
             }
@@ -980,6 +970,15 @@ mod tests {
         let (reason, code) = termination(failure.is_some(), false, false, Some(99));
         assert_eq!(reason, TerminationReason::SetupFailed);
         assert_eq!(code, Some(99));
+    }
+
+    #[test]
+    fn idmap_socket_is_optional() {
+        let cfg = parse(["--idmap".into(), "/run/nsbx-idmap.sock".into()].into_iter()).unwrap();
+        assert_eq!(
+            cfg.idmap.as_deref().and_then(|p| p.to_str()),
+            Some("/run/nsbx-idmap.sock")
+        );
     }
 
     #[test]

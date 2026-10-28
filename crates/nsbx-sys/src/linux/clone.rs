@@ -135,6 +135,11 @@ pub fn map_slot(pid: i32, base: u32) -> Result<(), Error> {
 
 /// Namespace uid 0 → `ns0_host`, namespace uid 1000 → `workload_host`.
 /// `ns0_host` has to be the child's current host uid (see [`map_slot`]).
+///
+/// This does not write `setgroups`. Opening that file needs `CAP_SYS_ADMIN`
+/// in the new user namespace, and the idmap helper's bounding set is only
+/// `CAP_SETUID` and `CAP_SETGID`. A writer with `CAP_SETGID` in the parent
+/// namespace can write `gid_map` directly.
 pub fn map_ranges(pid: i32, ns0_host: u32, workload_host: u32) -> Result<(), Error> {
     if ns0_host == workload_host {
         return Err(Error::from_io(
@@ -148,7 +153,6 @@ pub fn map_ranges(pid: i32, ns0_host: u32, workload_host: u32) -> Result<(), Err
             Error::from_io("uid map", io::Error::new(e.kind(), format!("{name}: {e}")))
         })
     };
-    write("setgroups", "deny")?;
     write("gid_map", &body)?;
     write("uid_map", &body)?;
     Ok(())

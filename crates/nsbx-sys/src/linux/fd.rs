@@ -1,7 +1,7 @@
 //! `close_range`, `openat2` and `execveat(AT_EMPTY_PATH)`.
 
 use std::ffi::CStr;
-use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use rustix::fs::{Mode, OFlags, ResolveFlags};
 
@@ -180,6 +180,49 @@ pub fn fd_is_open(fd: RawFd) -> bool {
     // SAFETY: F_GETFD only reads the descriptor flags of a caller-owned fd.
     let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     rc >= 0
+}
+
+/// The listening socket systemd passed (`LISTEN_FDS=1`, fd 3).
+///
+/// Systemd marks that descriptor non-blocking. The returned fd is blocking
+/// and owned by the caller.
+pub fn systemd_listen_fd() -> Result<OwnedFd, Error> {
+    let fds = std::env::var("LISTEN_FDS").unwrap_or_default();
+    if fds != "1" {
+        return Err(Error::from_io(
+            "listen",
+            std::io::Error::other(format!("LISTEN_FDS is {fds:?}")),
+        ));
+    }
+    let expected = std::process::id().to_string();
+    let got = std::env::var("LISTEN_PID").unwrap_or_default();
+    if got != expected {
+        return Err(Error::from_io(
+            "listen",
+            std::io::Error::other(format!("LISTEN_PID is {got:?}, want {expected}")),
+        ));
+    }
+    // SAFETY: systemd documents fd 3 as the first listening socket when
+    // LISTEN_FDS is 1 and LISTEN_PID is this process. Taking ownership
+    // matches the socket-activation contract: this process serves it.
+    let fd = unsafe { OwnedFd::from_raw_fd(3) };
+    // SAFETY: F_GETFL/F_SETFL only change the status flags of that owned fd.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(Error::last("fcntl"));
+    }
+    let blocking = flags & !libc::O_NONBLOCK;
+    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, blocking) };
+    if rc < 0 {
+        return Err(Error::last("fcntl"));
+    }
+    // SAFETY: this helper is still single-threaded. Clearing the activation
+    // variables keeps a later child from treating an inherited fd as its own.
+    unsafe {
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_PID");
+    }
+    Ok(fd)
 }
 
 pub fn poll_in(fd: RawFd, timeout_ms: i32) -> Result<bool, Error> {

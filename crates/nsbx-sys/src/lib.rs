@@ -21,7 +21,8 @@ pub use linux::{
     landlock_abi, make_rprivate, map_caller, map_ranges, map_slot, mount_flags, mount_proc_full,
     mount_proc_subset, mount_setattr_fd, mount_tmpfs, open_opath, open_tree_clone, openat2,
     peer_cred, pidfd_send_signal, pipe, pivot_root_detach, poll_in, ppid, prove_slot_map, read_fd,
-    set_no_new_privs, stage2_exec, syscall0, unshare_mount_ns, wait_child, wait_pidfd, write_fd,
+    set_no_new_privs, stage2_exec, syscall0, systemd_listen_fd, unshare_mount_ns, wait_child,
+    wait_pidfd, write_fd,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -32,5 +33,6 @@ pub use stub::{
     landlock_abi, make_rprivate, map_caller, map_ranges, map_slot, mount_flags, mount_proc_full,
     mount_proc_subset, mount_setattr_fd, mount_tmpfs, open_opath, open_tree_clone, openat2,
     peer_cred, pidfd_send_signal, pipe, pivot_root_detach, poll_in, ppid, prove_slot_map, read_fd,
-    set_no_new_privs, stage2_exec, syscall0, unshare_mount_ns, wait_child, wait_pidfd, write_fd,
+    set_no_new_privs, stage2_exec, syscall0, systemd_listen_fd, unshare_mount_ns, wait_child,
+    wait_pidfd, write_fd,
 };

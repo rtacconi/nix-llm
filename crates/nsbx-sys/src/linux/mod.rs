@@ -11,7 +11,7 @@ pub use clone::{
 pub use cred::{assume_workload_uid, chown_path, drop_dev_privileges, euid, peer_cred, syscall0};
 pub use fd::{
     chdir, close_range, dup2, execve, execveat_empty, fd_is_open, open_opath, openat2, pipe,
-    poll_in, read_fd, stage2_exec, write_fd,
+    poll_in, read_fd, stage2_exec, systemd_listen_fd, write_fd,
 };
 pub use mount::{
     bind_tree, bind_with, landlock_abi, make_rprivate, mount_flags, mount_proc_full,

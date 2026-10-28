@@ -85,6 +85,10 @@ pub fn fd_is_open(_fd: RawFd) -> bool {
     false
 }
 
+pub fn systemd_listen_fd() -> Result<OwnedFd, Error> {
+    no("systemd_listen_fd")
+}
+
 pub fn dup2(_from: RawFd, _to: RawFd) -> Result<(), Error> {
     no("dup2")
 }

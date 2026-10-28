@@ -1,8 +1,11 @@
 //! Start one stage-2 sandbox in a delegated job cgroup.
 
 use std::ffi::CString;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use nsbx_cgroup::{Job, Layout, Limits};
 
@@ -27,6 +30,7 @@ pub fn spawn(
     memory_max: u64,
     pids_max: u32,
     idmap: IdMap,
+    idmap_sock: Option<&Path>,
 ) -> Result<Sandbox, String> {
     let job = layout
         .create_job(
@@ -87,7 +91,7 @@ pub fn spawn(
     drop(err_w);
     drop(status_w);
     drop(program);
-    if let Err(err) = apply_idmap(&idmap, child.pid) {
+    if let Err(err) = apply_idmap(&idmap, child.pid, idmap_sock) {
         let _ = job.kill();
         return Err(err);
     }
@@ -106,7 +110,7 @@ pub fn spawn(
     })
 }
 
-fn apply_idmap(mode: &IdMap, pid: i32) -> Result<(), String> {
+fn apply_idmap(mode: &IdMap, pid: i32, sock: Option<&Path>) -> Result<(), String> {
     match mode {
         IdMap::Caller => nsbx_sys::map_caller(pid).map_err(|e| e.to_string()),
         IdMap::Slot { base } => {
@@ -121,6 +125,12 @@ fn apply_idmap(mode: &IdMap, pid: i32) -> Result<(), String> {
             let workload = base
                 .checked_add(1000)
                 .ok_or_else(|| "slot base overflows".to_string())?;
+            if let Some(path) = sock {
+                return ask_idmap(path, pid, ns0, workload);
+            }
+            if ns0 != 0 {
+                return Err("a production supervisor needs --idmap".into());
+            }
             let me = std::env::current_exe().map_err(|e| e.to_string())?;
             let helper = me
                 .parent()
@@ -145,6 +155,28 @@ fn apply_idmap(mode: &IdMap, pid: i32) -> Result<(), String> {
                 ))
             }
         }
+    }
+}
+
+fn ask_idmap(path: &Path, pid: i32, ns0: u32, workload: u32) -> Result<(), String> {
+    let mut stream =
+        UnixStream::connect(path).map_err(|e| format!("idmap connect {}: {e}", path.display()))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    let line = format!("{pid} {ns0} {workload}\n");
+    stream
+        .write_all(line.as_bytes())
+        .map_err(|e| format!("idmap write: {e}"))?;
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("idmap read: {e}"))?;
+    let text = String::from_utf8_lossy(&buf);
+    if text.trim() == "ok" {
+        Ok(())
+    } else {
+        Err(format!("idmap: {}", text.trim()))
     }
 }
 
