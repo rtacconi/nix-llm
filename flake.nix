@@ -73,12 +73,16 @@
           doCheck = true;
         };
 
-      # Design §9. One derivation pins the env, the etc skeleton and the store
-      # paths the supervisor is allowed to bind. The seccomp BPF hash is added
-      # when the profile compiler lands (M4).
+      # Design §9. One derivation pins the env, the etc skeleton, the executable
+      # allowlist and the seccomp BPF hash.
       mkRuntime =
-        pkgs:
-        { name, packages, profile }:
+        pkgs: nsbx:
+        {
+          name,
+          packages,
+          profile,
+          allowlist,
+        }:
         let
           env = pkgs.buildEnv {
             name = "${name}-env";
@@ -99,6 +103,23 @@
             : > $out/resolv.conf
           '';
           info = pkgs.closureInfo { rootPaths = [ env etc ]; };
+          policyScript =
+            if pkgs.stdenv.isLinux then
+              ''
+                ${nsbx}/bin/nsbx-policy closure-audit --allowlist ${allowlist} --bin ${env}/bin
+                ${nsbx}/bin/nsbx-policy policy-json \
+                  --profile-toml ${profile} \
+                  --seccomp-dir ${./policy/seccomp} \
+                  --store-paths ${info}/store-paths \
+                  --runtime "$out" \
+                  --out $out/policy.json
+              ''
+            else
+              ''
+                cat > $out/policy.json <<EOF
+                {"schema":1,"runtime":"$out","profile":"${name}"}
+                EOF
+              '';
         in
         pkgs.runCommand "${name}-runtime"
           {
@@ -110,9 +131,7 @@
             ln -s ${etc} $out/etc
             cp ${info}/store-paths $out/store-paths
             cp ${profile} $out/profile.toml
-            cat > $out/policy.json <<EOF
-            {"schema":1,"runtime":"$out","profile":"${name}"}
-            EOF
+            ${policyScript}
             find ${env}/bin \( -type f -o -type l \) | sort > $out/executables
           '';
     in
@@ -120,12 +139,13 @@
       packages = forAll (pkgs: {
         nsbx-rust = rustWorkspace pkgs;
         default = rustWorkspace pkgs;
-        python-compute = mkRuntime pkgs {
+        python-compute = mkRuntime pkgs (rustWorkspace pkgs) {
           name = "python-compute";
           packages = [ pkgs.python3Minimal ];
           profile = ./policy/profiles/python-compute.toml;
+          allowlist = ./policy/allowlists/python-compute.txt;
         };
-        cli-text = mkRuntime pkgs {
+        cli-text = mkRuntime pkgs (rustWorkspace pkgs) {
           name = "cli-text";
           packages = [
             pkgs.coreutils
@@ -134,6 +154,7 @@
             pkgs.jq
           ];
           profile = ./policy/profiles/cli-text.toml;
+          allowlist = ./policy/allowlists/cli-text.txt;
         };
       });
 
@@ -214,16 +235,19 @@
               ver = k66.succeed("uname -r").strip()
               assert ver.startswith("6.6."), ver
               k66.succeed("nsbx-supervisor --check --strict")
+              k66.succeed("nsbx-idmap --self-test")
               k66.shutdown()
 
               k612.start()
               ver = k612.succeed("uname -r").strip()
               assert ver.startswith("6.12."), ver
               k612.succeed("nsbx-supervisor --check --strict")
+              k612.succeed("nsbx-idmap --self-test")
               k612.shutdown()
 
               latest.start()
               latest.succeed("nsbx-supervisor --check --strict")
+              latest.succeed("nsbx-idmap --self-test")
               latest.shutdown()
 
               missing.start()

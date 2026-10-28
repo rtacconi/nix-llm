@@ -133,6 +133,11 @@ impl PolicyBundle {
                 "collect_prefixes": p.collect_prefixes,
                 "write_back": p.write_back,
             },
+            "implemented": {
+                "namespace": p.backend == crate::profile::Backend::Namespace,
+                "egress_proxy": false,
+                "microvm": false,
+            },
             "limits": { "max": p.limits, "defaults": p.defaults },
             "env_allow": p.env_allow,
             "proc": p.proc,

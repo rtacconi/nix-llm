@@ -140,6 +140,8 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
     let mut profile = None;
     let mut policy_dir = None;
     let mut workspace_exec = false;
+    let mut proc_full = false;
+    let mut memory_bytes = 0;
     if lines.next().is_some_and(|l| l == "profile") {
         profile = Some(next_line(&mut lines)?);
         if lines.next().is_some_and(|l| l == "policy") {
@@ -147,6 +149,14 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
         }
         if lines.next().is_some_and(|l| l == "workspace_exec") {
             workspace_exec = next_line(&mut lines)? == "true";
+        }
+        if lines.next().is_some_and(|l| l == "proc") {
+            proc_full = next_line(&mut lines)? == "full";
+            if lines.next().is_some_and(|l| l == "memory_bytes") {
+                memory_bytes = next_line(&mut lines)?
+                    .parse()
+                    .map_err(|_| "memory_bytes".to_string())?;
+            }
         }
     }
     Ok(Spec {
@@ -157,6 +167,8 @@ fn parse_spec(text: &str) -> Result<Spec, String> {
         profile,
         policy_dir,
         workspace_exec,
+        proc_full,
+        memory_bytes,
     })
 }
 

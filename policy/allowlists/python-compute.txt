@@ -1,0 +1,6 @@
+pydoc
+pydoc3
+pydoc3.13
+python
+python3
+python3.13

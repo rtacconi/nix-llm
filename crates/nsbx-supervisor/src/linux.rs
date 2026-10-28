@@ -8,8 +8,10 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use nsbx_core::epoch::{Epoch, Ticket};
 use nsbx_policy::bundle::PolicyBundle;
 use nsbx_policy::narrow::Principal;
+use nsbx_policy::profile::{Backend, ProcMode};
 use nsbx_proto::frame::{self, FrameType, HEADER_LEN, MAX_FRAME_LEN};
 use nsbx_proto::msg::{
     self, Accepted, Cleanup, ErrorCategory, ErrorV1, Hello, HelloAck, Rejected, ResultV1, Started,
@@ -259,6 +261,7 @@ fn serve(
                     if let Some(job) = live.as_mut()
                         && job.id == cancel.job_id.to_string()
                     {
+                        job.epoch.bump();
                         job.cancel = Some(
                             Instant::now() + Duration::from_millis(u64::from(cancel.grace_ms)),
                         );
@@ -284,7 +287,12 @@ struct Live {
     stdout_bytes: u64,
     stderr_bytes: u64,
     started: Instant,
+    wall_at: Instant,
+    wall_hit: bool,
+    epoch: Epoch,
+    ticket: Ticket,
     cancel: Option<Instant>,
+    sandbox_done: bool,
     out_open: bool,
     err_open: bool,
     report: Vec<u8>,
@@ -292,6 +300,7 @@ struct Live {
     result: Vec<u8>,
     runtime: String,
     truncated: bool,
+    warden: std::os::fd::OwnedFd,
 }
 
 struct Host<'a> {
@@ -356,6 +365,14 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
     let profile = policy
         .get(profile_name)
         .ok_or_else(|| format!("unknown profile {profile_name}"))?;
+    if profile.backend != Backend::Namespace {
+        reject(fd, submit, "unsupported_feature", "backend", "microvm")?;
+        return Err("microvm backend is not implemented".into());
+    }
+    if effective["network"].as_str() == Some("egress-proxy") {
+        reject(fd, submit, "unsupported_feature", "network", "egress-proxy")?;
+        return Err("egress proxy is not implemented".into());
+    }
     let runtime = runtimes
         .get(profile_name)
         .ok_or_else(|| format!("no --runtime for {profile_name}"))?;
@@ -391,9 +408,13 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
     let memory = effective["limits"]["memory_bytes"]
         .as_u64()
         .unwrap_or(512 * 1024 * 1024);
+    let wall_ms = effective["limits"]["wall_ms"].as_u64().unwrap_or(60_000);
+    let output_cap = effective["limits"]["output_bytes"]
+        .as_u64()
+        .unwrap_or(1024 * 1024);
     let pids = effective["limits"]["pids"].as_u64().unwrap_or(64);
     let pids = u32::try_from(pids).unwrap_or(64);
-    let spec = render_spec(
+    let mut spec = render_spec(
         &root,
         &etc.display().to_string(),
         &argv,
@@ -402,6 +423,11 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         seccomp,
         profile.workspace_exec,
     );
+    if profile.proc == ProcMode::Full {
+        spec.push_str("proc\nfull\nmemory_bytes\n");
+        spec.push_str(&memory.to_string());
+        spec.push('\n');
+    }
     send_json(
         fd,
         FrameType::Accepted,
@@ -411,7 +437,21 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         },
     )?;
     let started = Instant::now();
-    let sandbox = spawn::spawn(layout, "job", &spec, memory, pids.max(1))?;
+    let started_box = spawn::spawn(layout, "job", &spec, memory, pids.max(1))?;
+    let warden = match crate::warden::spawn(started_box.stdout, started_box.stderr, output_cap) {
+        Ok(warden) => warden,
+        Err(err) => {
+            let _ = started_box.job.kill();
+            return Err(err);
+        }
+    };
+    let sandbox = Sandbox {
+        stdout: warden.stdout,
+        stderr: warden.stderr,
+        report: started_box.report,
+        pidfd: started_box.pidfd,
+        job: started_box.job,
+    };
     let setup_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     send_json(
         fd,
@@ -421,6 +461,8 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
             setup_us,
         },
     )?;
+    let epoch = Epoch::new();
+    let ticket = epoch.ticket();
     Ok(Live {
         id: submit.job_id.to_string(),
         hash: submit.request_hash.clone(),
@@ -430,7 +472,12 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         stdout_bytes: 0,
         stderr_bytes: 0,
         started,
+        wall_at: started + Duration::from_millis(wall_ms),
+        wall_hit: false,
+        epoch,
+        ticket,
         cancel: None,
+        sandbox_done: false,
         out_open: true,
         err_open: true,
         report: Vec::new(),
@@ -438,10 +485,15 @@ fn start_job(fd: i32, submit: &Submit, host: &Host<'_>) -> Result<Live, String> 
         result: Vec::new(),
         runtime: root,
         truncated: false,
+        warden: warden.pidfd,
     })
 }
 
 fn pump(sock: i32, job: &mut Live) -> Result<(), String> {
+    if Instant::now() >= job.wall_at {
+        job.wall_hit = true;
+        let _ = job.box_.job.kill();
+    }
     if let Some(deadline) = job.cancel
         && Instant::now() >= deadline
     {
@@ -480,14 +532,10 @@ fn pump(sock: i32, job: &mut Live) -> Result<(), String> {
         let _ = read_some(job.box_.report.as_raw_fd(), &mut job.report)?;
     }
     index += 1;
-    if ready_flags[index] && !job.finished {
-        // The process has exited. Take whatever output the window still allows.
-        if job.out_open {
-            job.out_open = drain(sock, job, true)?;
-        }
-        if job.err_open {
-            job.err_open = drain(sock, job, false)?;
-        }
+    if ready_flags[index] {
+        job.sandbox_done = true;
+    }
+    if job.sandbox_done && !job.out_open && !job.err_open && !job.finished {
         finish(sock, job)?;
     }
     Ok(())
@@ -516,6 +564,9 @@ fn drain(sock: i32, job: &mut Live, stdout: bool) -> Result<bool, String> {
         match nsbx_sys::read_fd(fd, &mut buf[..want]) {
             Ok(0) => return Ok(false),
             Ok(n) => {
+                if job.epoch.check(job.ticket).is_err() {
+                    continue;
+                }
                 let stream = if stdout {
                     Stream::Stdout
                 } else {
@@ -538,17 +589,15 @@ fn drain(sock: i32, job: &mut Live, stdout: bool) -> Result<bool, String> {
 
 fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     let waited = nsbx_sys::wait_pidfd(job.box_.pidfd.as_raw_fd()).map_err(|e| e.to_string())?;
+    let _ = nsbx_sys::wait_pidfd(job.warden.as_raw_fd());
     let _ = read_some(job.box_.report.as_raw_fd(), &mut job.report);
     let report = String::from_utf8_lossy(&job.report);
-    let (reason, exit_code) = if report.starts_with("ERR") {
-        (TerminationReason::SetupFailed, waited.exit_code())
-    } else if job.cancel.is_some() && waited.exit_code().is_none() {
-        (TerminationReason::Cancelled, None)
-    } else if let Some(code) = waited.exit_code() {
-        (TerminationReason::Exited, Some(code))
-    } else {
-        (TerminationReason::Signaled, None)
-    };
+    let (reason, exit_code) = termination(
+        report.starts_with("ERR"),
+        job.wall_hit,
+        job.cancel.is_some(),
+        waited.exit_code(),
+    );
     let result = ResultV1 {
         job_id: job.id.parse().map_err(|_| "job id".to_string())?,
         reason,
@@ -578,6 +627,25 @@ fn finish(sock: i32, job: &mut Live) -> Result<(), String> {
     job.finished = true;
     let _ = job.box_.job.kill();
     Ok(())
+}
+
+fn termination(
+    setup_failed: bool,
+    wall: bool,
+    cancel: bool,
+    exit: Option<i32>,
+) -> (TerminationReason, Option<i32>) {
+    if setup_failed {
+        (TerminationReason::SetupFailed, exit)
+    } else if wall {
+        (TerminationReason::WallTimeout, None)
+    } else if cancel && exit.is_none() {
+        (TerminationReason::Cancelled, None)
+    } else if let Some(code) = exit {
+        (TerminationReason::Exited, Some(code))
+    } else {
+        (TerminationReason::Signaled, None)
+    }
 }
 
 fn render_spec(
@@ -797,4 +865,23 @@ fn read_sysctl(path: &str) -> Result<i64, String> {
     text.trim()
         .parse()
         .map_err(|_| format!("not an integer: {text}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_timeout_outranks_a_signal() {
+        let (reason, code) = termination(false, true, true, None);
+        assert_eq!(reason, TerminationReason::WallTimeout);
+        assert_eq!(code, None);
+    }
+
+    #[test]
+    fn a_clean_exit_stays_exited() {
+        let (reason, code) = termination(false, false, false, Some(0));
+        assert_eq!(reason, TerminationReason::Exited);
+        assert_eq!(code, Some(0));
+    }
 }

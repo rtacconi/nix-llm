@@ -51,6 +51,55 @@ fn caps_are_clear_landlock_holds_and_python_runs() {
 }
 
 #[test]
+fn isolation_proc_files_are_synthetic() {
+    if skip_or_delegate() {
+        return;
+    }
+    let python = real_path("python3");
+    let runtime = store_root(&python);
+    let closure = store_closure(&python);
+    let etc = std::env::temp_dir().join("nsbx-m4-proc-etc");
+    let _ = std::fs::remove_dir_all(&etc);
+    std::fs::create_dir_all(&etc).expect("etc");
+    std::fs::write(etc.join("passwd"), "root:x:0:0:root:/:/bin/false\n").expect("passwd");
+    let host = std::fs::read_to_string("/proc/cpuinfo").expect("host cpuinfo");
+    let host_model = host
+        .lines()
+        .find(|l| l.starts_with("model name"))
+        .unwrap_or("model name");
+    let script = "exec(\"print(open('/proc/meminfo').read());print('---');print(open('/proc/cpuinfo').read())\")";
+    let memory = 64 * 1024 * 1024;
+    let tail = format!("proc\nfull\nmemory_bytes\n{memory}\n");
+    let got = run_tail(
+        &python,
+        &runtime,
+        &closure,
+        &etc,
+        "python",
+        &[script],
+        &tail,
+    );
+    assert!(
+        got.exit == Some(0),
+        "exit {:?} stdout {:?} stderr {:?} report {}",
+        got.exit,
+        got.stdout,
+        got.stderr,
+        got.report
+    );
+    assert!(got.stdout.contains("MemTotal: 65536 kB"), "{}", got.stdout);
+    assert!(
+        got.stdout.contains("model name\t: generic"),
+        "{}",
+        got.stdout
+    );
+    assert!(
+        !got.stdout.contains(host_model) || host_model.contains("generic"),
+        "host model leaked: {host_model}"
+    );
+}
+
+#[test]
 fn kill_list_holds_for_every_profile() {
     if skip_or_delegate() {
         return;
@@ -136,12 +185,24 @@ fn run(
     profile: &str,
     code_and_args: &[&str],
 ) -> Out {
+    run_tail(python, runtime, closure, etc, profile, code_and_args, "")
+}
+
+fn run_tail(
+    python: &str,
+    runtime: &str,
+    closure: &[String],
+    etc: &std::path::Path,
+    profile: &str,
+    code_and_args: &[&str],
+    tail: &str,
+) -> Out {
     // MS_PRIVATE inside a fresh user namespace sometimes returns EPERM. A later
     // identical sandbox succeeds. A filter miss still fails the assertion.
-    let mut last = run_once(python, runtime, closure, etc, profile, code_and_args);
+    let mut last = run_once(python, runtime, closure, etc, profile, code_and_args, tail);
     for _ in 0..2 {
         if last.exit == Some(99) && last.report.contains("MS_PRIVATE") {
-            last = run_once(python, runtime, closure, etc, profile, code_and_args);
+            last = run_once(python, runtime, closure, etc, profile, code_and_args, tail);
         }
     }
     last
@@ -154,6 +215,7 @@ fn run_once(
     etc: &std::path::Path,
     profile: &str,
     code_and_args: &[&str],
+    tail: &str,
 ) -> Out {
     let mut spec = String::new();
     spec.push_str("runtime\n");
@@ -181,6 +243,7 @@ fn run_once(
     spec.push_str("\npolicy\n");
     spec.push_str(POLICY);
     spec.push_str("\nworkspace_exec\nfalse\n");
+    spec.push_str(tail);
 
     let layout = Layout::establish().expect("cgroup");
     let seq = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

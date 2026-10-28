@@ -21,6 +21,9 @@ pub struct Spec {
     pub profile: Option<String>,
     pub policy_dir: Option<String>,
     pub workspace_exec: bool,
+    /// Full `/proc` with synthetic `meminfo` and `cpuinfo`.
+    pub proc_full: bool,
+    pub memory_bytes: u64,
 }
 
 pub struct Private {
@@ -110,7 +113,12 @@ impl Private {
         bind(&spec.etc, &format!("{ROOT}/etc"), true, true, true)?;
         let proc = format!("{ROOT}/proc");
         std::fs::create_dir_all(&proc).map_err(|e| Error::from_io("proc", e))?;
-        nsbx_sys::mount_proc_subset(&c_str(&proc)?)?;
+        if spec.proc_full {
+            nsbx_sys::mount_proc_full(&c_str(&proc)?)?;
+            synthetic_proc(spec)?;
+        } else {
+            nsbx_sys::mount_proc_subset(&c_str(&proc)?)?;
+        }
         let bin = format!("{}/bin", spec.runtime);
         std::os::unix::fs::symlink(&bin, format!("{ROOT}/bin"))
             .map_err(|e| Error::from_io("symlink", e))?;
@@ -344,6 +352,36 @@ fn add_rule(
     ruleset
         .add_rule(rule)
         .map_err(|e| Error::from_io("landlock", std::io::Error::other(format!("{path}: {e}"))))
+}
+
+fn bind_existing(src: &str, dest: &str) -> Result<(), Error> {
+    let dest_fd = nsbx_sys::open_opath(&c_str(dest)?)?;
+    nsbx_sys::bind_with(&c_str(src)?, dest_fd.as_fd(), true, true, true)
+}
+
+fn synthetic_proc(spec: &Spec) -> Result<(), Error> {
+    let kb = spec.memory_bytes / 1024;
+    if kb == 0 {
+        return Err(Error::from_io(
+            "meminfo",
+            std::io::Error::other("memory_bytes is zero"),
+        ));
+    }
+    let dir = format!("{ROOT}/.nsbx");
+    std::fs::create_dir_all(&dir).map_err(|e| Error::from_io("nsbx", e))?;
+    let mem = format!("MemTotal: {kb} kB\nMemFree: {kb} kB\n");
+    std::fs::write(format!("{dir}/meminfo"), mem).map_err(|e| Error::from_io("meminfo", e))?;
+    let cpu = "processor\t: 0\nvendor_id\t: generic\nmodel name\t: generic\n";
+    std::fs::write(format!("{dir}/cpuinfo"), cpu).map_err(|e| Error::from_io("cpuinfo", e))?;
+    bind_existing(&format!("{dir}/meminfo"), &format!("{ROOT}/proc/meminfo"))?;
+    bind_existing(&format!("{dir}/cpuinfo"), &format!("{ROOT}/proc/cpuinfo"))?;
+    for name in ["cmdline", "version", "modules"] {
+        let dest = format!("{ROOT}/proc/{name}");
+        if Path::new(&dest).exists() {
+            bind_existing("/dev/null", &dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn c_str(s: &str) -> Result<CString, Error> {

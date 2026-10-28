@@ -41,6 +41,18 @@ pub fn map_caller(_pid: i32) -> Result<(), Error> {
     no("map_caller")
 }
 
+pub fn map_slot(_pid: i32, _base: u32) -> Result<(), Error> {
+    no("map_slot")
+}
+
+pub fn ppid(_pid: i32) -> Result<i32, Error> {
+    no("ppid")
+}
+
+pub fn prove_slot_map() -> Result<(), Error> {
+    no("prove_slot_map")
+}
+
 pub fn close_range(_first: u32, _last: u32) -> Result<(), Error> {
     no("close_range")
 }
@@ -59,6 +71,10 @@ pub fn open_opath(_path: &CStr) -> Result<OwnedFd, Error> {
 
 pub fn pipe() -> Result<(OwnedFd, OwnedFd), Error> {
     no("pipe")
+}
+
+pub fn poll_in(_fd: RawFd, _timeout_ms: i32) -> Result<bool, Error> {
+    no("poll")
 }
 
 pub fn dup2(_from: RawFd, _to: RawFd) -> Result<(), Error> {
@@ -175,6 +191,9 @@ pub fn mount_tmpfs(_target: &CStr, _options: &CStr) -> Result<(), Error> {
     no("mount")
 }
 pub fn mount_proc_subset(_target: &CStr) -> Result<(), Error> {
+    no("mount")
+}
+pub fn mount_proc_full(_target: &CStr) -> Result<(), Error> {
     no("mount")
 }
 pub fn open_tree_clone(_path: &CStr) -> Result<OwnedFd, Error> {

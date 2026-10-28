@@ -152,6 +152,22 @@ pub fn execveat_empty(fd: RawFd, argv: &[impl AsRef<CStr>], envp: &[impl AsRef<C
     Error::last("execveat")
 }
 
+/// `true` when `fd` is readable or hung up. `timeout_ms` of -1 blocks.
+pub fn poll_in(fd: RawFd, timeout_ms: i32) -> Result<bool, Error> {
+    let mut fds = [libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: `fds` is one pollfd for a caller-owned descriptor.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+    if rc < 0 {
+        return Err(Error::last("poll"));
+    }
+    let flags = fds[0].revents;
+    Ok(flags & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

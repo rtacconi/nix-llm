@@ -13,6 +13,7 @@ insecure-dev-mode = []
 
 [dependencies]
 nsbx-cgroup = { path = "../nsbx-cgroup" }
+nsbx-core = { path = "../nsbx-core" }
 nsbx-policy = { path = "../nsbx-policy" }
 nsbx-proto = { path = "../nsbx-proto" }
 nsbx-sys = { path = "../nsbx-sys" }

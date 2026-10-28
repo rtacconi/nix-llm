@@ -60,17 +60,29 @@ pub fn mount_tmpfs(target: &CStr, options: &CStr) -> Result<(), Error> {
     }
 }
 
+pub fn mount_proc_full(target: &CStr) -> Result<(), Error> {
+    // Full proc so stage 2 can replace meminfo and cpuinfo. `hidepid` still
+    // hides other processes. Sensitive files are masked by the caller.
+    mount_proc(target, c"hidepid=invisible")
+}
+
 pub fn mount_proc_subset(target: &CStr) -> Result<(), Error> {
     // SAFETY: `target` is a directory in this mount namespace. The option
     // string is a literal. This fails with EPERM unless the caller is in a
     // new PID namespace (E3).
+    mount_proc(target, c"hidepid=invisible,subset=pid")
+}
+
+fn mount_proc(target: &CStr, options: &CStr) -> Result<(), Error> {
+    // SAFETY: `target` is a directory in this mount namespace. `options` is a
+    // literal. This fails with EPERM unless the caller is in a new PID namespace.
     let rc = unsafe {
         libc::mount(
             c"proc".as_ptr(),
             target.as_ptr(),
             c"proc".as_ptr(),
             (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
-            c"hidepid=invisible,subset=pid".as_ptr().cast(),
+            options.as_ptr().cast(),
         )
     };
     if rc < 0 {

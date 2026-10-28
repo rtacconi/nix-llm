@@ -223,6 +223,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nsbx-idmap"
+version = "0.1.0"
+dependencies = [
+ "nsbx-sys",
+]
+
+[[package]]
 name = "nsbx-policy"
 version = "0.1.0"
 dependencies = [
@@ -234,6 +241,10 @@ dependencies = [
  "thiserror",
  "toml",
 ]
+
+[[package]]
+name = "nsbx-probe"
+version = "0.1.0"
 
 [[package]]
 name = "nsbx-proto"
@@ -274,6 +285,7 @@ name = "nsbx-supervisor"
 version = "0.1.0"
 dependencies = [
  "nsbx-cgroup",
+ "nsbx-core",
  "nsbx-policy",
  "nsbx-proto",
  "nsbx-sys",
@@ -289,6 +301,16 @@ dependencies = [
  "libc",
  "rustix",
  "thiserror",
+]
+
+[[package]]
+name = "nsbx-warden"
+version = "0.1.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "nsbx-sys",
+ "seccompiler",
 ]
 
 [[package]]
