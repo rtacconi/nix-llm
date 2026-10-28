@@ -1,0 +1,22 @@
+[package]
+name = "nsbx-sys"
+description = "The only NixSandbox crate that contains unsafe code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc.workspace = true
+rustix.workspace = true
+thiserror.workspace = true
+
+# Not `workspace = true`: this crate is the one place `unsafe` is allowed.
+# The rest of the lint set matches the workspace.
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"

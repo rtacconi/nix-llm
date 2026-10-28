@@ -1,9 +1,24 @@
 [workspace]
 resolver = "3"
-members = ["crates/nsbx-proto", "crates/nsbx-policy", "crates/nsbx-core", "crates/nsbx-pyo3"]
+members = [
+    "crates/nsbx-proto",
+    "crates/nsbx-policy",
+    "crates/nsbx-core",
+    "crates/nsbx-sys",
+    "crates/nsbx-cgroup",
+    "crates/nsbx-stage2",
+    "crates/nsbx-pyo3",
+]
 # The Python binding needs a Python 3.12 interpreter to build; it is built by
 # Nix (maturin) and is left out of plain `cargo build` / `cargo test`.
-default-members = ["crates/nsbx-proto", "crates/nsbx-policy", "crates/nsbx-core"]
+default-members = [
+    "crates/nsbx-proto",
+    "crates/nsbx-policy",
+    "crates/nsbx-core",
+    "crates/nsbx-sys",
+    "crates/nsbx-cgroup",
+    "crates/nsbx-stage2",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,6 +33,8 @@ thiserror = "2"
 toml = "0.8"
 uuid = { version = "1", features = ["serde"] }
 proptest = "1"
+libc = "0.2.191"
+rustix = { version = "1.1.6", features = ["fs", "mount", "process", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

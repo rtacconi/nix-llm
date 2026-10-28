@@ -34,7 +34,9 @@ three parts:
 | Admin policy files | [policy/](policy) | `python-compute` and `cli-text` profiles; `base`, `python`, `node`, `cli` seccomp sources |
 | PyO3 binding for `narrow()` | [crates/nsbx-pyo3](crates/nsbx-pyo3) | Done: the orchestrator and the supervisor narrow with the same Rust code. Built by maturin through Nix, with type stubs |
 | Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API incl. `/v1/run` and `/v1/profiles/{name}/environment`, auth, principal caps, policy denials (422) from the shared `narrow()`, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
-| Supervisor, stage 2, idmap, warden | — | Not started (Linux) |
+| Syscalls and cgroup v2 | [crates/nsbx-sys](crates/nsbx-sys), [crates/nsbx-cgroup](crates/nsbx-cgroup) | Linux: `clone3` into a delegated cgroup, pidfd, mount helpers. `nsbx-sys` is the only crate with `unsafe` |
+| Trivial stage 2 | [crates/nsbx-stage2](crates/nsbx-stage2) | `execveat` immediately after `clone3`. Filesystem typestate is next |
+| Supervisor, full stage 2, idmap, warden | — | Not started |
 
 ## Development
 

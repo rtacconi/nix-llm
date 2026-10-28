@@ -1,0 +1,17 @@
+[package]
+name = "nsbx-stage2"
+description = "Single-threaded sandbox setup, exec'd immediately after clone3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nsbx-sys = { path = "../nsbx-sys" }
+
+[dev-dependencies]
+nsbx-cgroup = { path = "../nsbx-cgroup" }
+nsbx-sys = { path = "../nsbx-sys" }
+
+[lints]
+workspace = true

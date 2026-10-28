@@ -1,0 +1,15 @@
+[package]
+name = "nsbx-cgroup"
+description = "Delegated cgroup v2 subtree for NixSandbox jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nsbx-sys = { path = "../nsbx-sys" }
+thiserror.workspace = true
+rustix.workspace = true
+
+[lints]
+workspace = true
