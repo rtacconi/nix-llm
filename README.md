@@ -14,6 +14,7 @@ three parts:
 | Document | Contents |
 |----------|----------|
 | [docs/design.md](docs/design.md) | **The system design**: threat model, architecture, kernel primitives, privilege model and setup ordering, filesystem, network, seccomp/Landlock, runtimes and co-built policy, resources and cancellation, supervisor internals, protocol and API, code layout, testing and verification, observability and benchmarks, failure modes, residual risks, roadmap, decision log |
+| [docs/verification.md](docs/verification.md) | M0: each §4 claim checked against kernel docs, man-pages and the pinned crates, plus experiments E1–E7 |
 | [docs/literature-review.md](docs/literature-review.md) | Findings from 19 papers on LLM-agent sandboxing and privilege control, with citations |
 | [docs/content-safety.md](docs/content-safety.md) | Repository rules that keep the repo free of antivirus false positives |
 
@@ -33,7 +34,10 @@ three parts:
 | Admin policy files | [policy/](policy) | `python-compute` and `cli-text` profiles; `base`, `python`, `node`, `cli` seccomp sources |
 | PyO3 binding for `narrow()` | [crates/nsbx-pyo3](crates/nsbx-pyo3) | Done: the orchestrator and the supervisor narrow with the same Rust code. Built by maturin through Nix, with type stubs |
 | Orchestrator (Python) | [python/](python) | Done against a fake supervisor: HTTP API incl. `/v1/run` and `/v1/profiles/{name}/environment`, auth, principal caps, policy denials (422) from the shared `narrow()`, idempotency, admission control, credit flow control, SSE, cancel, fail-closed disconnect, backstop deadline |
-| Supervisor, stage 2, idmap, warden | — | Not started (Linux) |
+| Syscalls and cgroup v2 | [crates/nsbx-sys](crates/nsbx-sys), [crates/nsbx-cgroup](crates/nsbx-cgroup) | Linux: `clone3` into a delegated cgroup, pidfd, mount helpers. `nsbx-sys` is the only crate with `unsafe` |
+| Stage 2 filesystem | [crates/nsbx-stage2](crates/nsbx-stage2) | Typestate through `Restricted<SeccompApplied>`. Pivot, exact mountinfo, `python3 -c`. Profile seccomp and Landlock are next |
+| Runtimes | [flake.nix](flake.nix) `mkRuntime` | `python-compute` and `cli-text`. BPF hash is added with the profile compiler |
+| Supervisor, full stage 2, idmap, warden | — | Not started |
 
 ## Development
 

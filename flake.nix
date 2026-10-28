@@ -72,32 +72,167 @@
           # separately by maturin (nsbxPolicyPy).
           doCheck = true;
         };
+
+      # Design §9. One derivation pins the env, the etc skeleton and the store
+      # paths the supervisor is allowed to bind. The seccomp BPF hash is added
+      # when the profile compiler lands (M4).
+      mkRuntime =
+        pkgs:
+        { name, packages, profile }:
+        let
+          env = pkgs.buildEnv {
+            name = "${name}-env";
+            paths = packages;
+            pathsToLink = [ "/bin" ];
+          };
+          etc = pkgs.runCommand "${name}-etc" { } ''
+            mkdir -p $out
+            cat > $out/passwd <<'EOF'
+            root:x:0:0:root:/:/bin/false
+            sandbox:x:1000:1000:sandbox:/workspace:/bin/false
+            EOF
+            cat > $out/group <<'EOF'
+            root:x:0:
+            sandbox:x:1000:
+            EOF
+            printf '127.0.0.1 localhost\n' > $out/hosts
+            : > $out/resolv.conf
+          '';
+          info = pkgs.closureInfo { rootPaths = [ env etc ]; };
+        in
+        pkgs.runCommand "${name}-runtime"
+          {
+            passthru = { inherit env etc; };
+          }
+          ''
+            mkdir -p $out
+            ln -s ${env} $out/env
+            ln -s ${etc} $out/etc
+            cp ${info}/store-paths $out/store-paths
+            cp ${profile} $out/profile.toml
+            cat > $out/policy.json <<EOF
+            {"schema":1,"runtime":"$out","profile":"${name}"}
+            EOF
+            find ${env}/bin \( -type f -o -type l \) | sort > $out/executables
+          '';
     in
     {
       packages = forAll (pkgs: {
         nsbx-rust = rustWorkspace pkgs;
         default = rustWorkspace pkgs;
+        python-compute = mkRuntime pkgs {
+          name = "python-compute";
+          packages = [ pkgs.python3Minimal ];
+          profile = ./policy/profiles/python-compute.toml;
+        };
+        cli-text = mkRuntime pkgs {
+          name = "cli-text";
+          packages = [
+            pkgs.coreutils
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.jq
+          ];
+          profile = ./policy/profiles/cli-text.toml;
+        };
       });
 
-      checks = forAll (pkgs: {
-        rust = rustWorkspace pkgs;
+      checks = forAll (
+        pkgs:
+        let
+          nsbx = rustWorkspace pkgs;
+        in
+        {
+          rust = nsbx;
 
-        python =
-          pkgs.runCommand "nsbx-orchestrator-tests"
-            {
-              nativeBuildInputs = [
-                (pythonFor pkgs)
-                pkgs.ruff
-              ];
-            }
-            ''
-              cp -r ${./python} python && cp -r ${./policy} policy && chmod -R u+w python policy && cd python
-              ruff check .
-              mypy
-              pytest -q
-              touch $out
+          python =
+            pkgs.runCommand "nsbx-orchestrator-tests"
+              {
+                nativeBuildInputs = [
+                  (pythonFor pkgs)
+                  pkgs.ruff
+                ];
+              }
+              ''
+                cp -r ${./python} python && cp -r ${./policy} policy && chmod -R u+w python policy && cd python
+                ruff check .
+                mypy
+                pytest -q
+                touch $out
+              '';
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # M6: the same supervisor binary, three kernels, and one host whose
+          # io_uring sysctl is left on. Strict mode must pass only on the three
+          # hardened kernels.
+          kernels = pkgs.testers.runNixOSTest {
+            name = "nsbx-kernels";
+            nodes = {
+              k66 = {
+                pkgs,
+                ...
+              }:
+              {
+                imports = [ ./nix/module.nix ];
+                boot.kernelPackages = pkgs.linuxPackages_6_6;
+                services.nsbx.enable = true;
+                environment.systemPackages = [ nsbx ];
+              };
+              k612 = {
+                pkgs,
+                ...
+              }:
+              {
+                imports = [ ./nix/module.nix ];
+                boot.kernelPackages = pkgs.linuxPackages_6_12;
+                services.nsbx.enable = true;
+                environment.systemPackages = [ nsbx ];
+              };
+              latest = {
+                pkgs,
+                ...
+              }:
+              {
+                imports = [ ./nix/module.nix ];
+                boot.kernelPackages = pkgs.linuxPackages_latest;
+                services.nsbx.enable = true;
+                environment.systemPackages = [ nsbx ];
+              };
+              missing = {
+                lib,
+                ...
+              }:
+              {
+                imports = [ ./nix/module.nix ];
+                services.nsbx.enable = true;
+                environment.systemPackages = [ nsbx ];
+                boot.kernel.sysctl."kernel.io_uring_disabled" = lib.mkForce 0;
+              };
+            };
+            testScript = ''
+              k66.start()
+              ver = k66.succeed("uname -r").strip()
+              assert ver.startswith("6.6."), ver
+              k66.succeed("nsbx-supervisor --check --strict")
+              k66.shutdown()
+
+              k612.start()
+              ver = k612.succeed("uname -r").strip()
+              assert ver.startswith("6.12."), ver
+              k612.succeed("nsbx-supervisor --check --strict")
+              k612.shutdown()
+
+              latest.start()
+              latest.succeed("nsbx-supervisor --check --strict")
+              latest.shutdown()
+
+              missing.start()
+              missing.fail("nsbx-supervisor --check --strict")
+              missing.shutdown()
             '';
-      });
+          };
+        }
+      );
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

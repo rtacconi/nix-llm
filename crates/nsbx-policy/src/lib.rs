@@ -2,6 +2,8 @@
 //! profile sources. Pure and platform-neutral; shared by the supervisor and
 //! (through a binding) the orchestrator. See `docs/design.md` §8, §9 and §12.
 
+#[cfg(target_os = "linux")]
+pub mod bpf;
 pub mod bundle;
 pub mod caps;
 pub mod env;

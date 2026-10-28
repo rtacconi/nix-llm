@@ -331,8 +331,8 @@ sequenceDiagram
     C->>K: pivot_root, detach old root, root read-only
     C->>K: hostname, rlimits, max_user_namespaces=0, close_range
     C->>K: fork workload
-    W->>K: setsid, drop bounding set, setgroups(0), setresgid/setresuid(1000)
-    W->>K: clear ambient/inheritable, lock securebits, NO_NEW_PRIVS
+    W->>K: setsid, drop bounding set, clear ambient, lock securebits
+    W->>K: setgroups(0), setresgid/setresuid(1000), NO_NEW_PRIVS
     W->>K: landlock_restrict_self, seccomp filter
     W->>K: execve(argv0 from runtime PATH)
     D->>S: Started{setup timings}
@@ -387,7 +387,7 @@ seccomp.
 | UID/GID maps | ns 0 → base, ns 1000 → base+1000 | 3.8 | Multi-range needs `CAP_SETUID/SETGID` (idmap) | Yes |
 | `PR_SET_NO_NEW_PRIVS` | Blocks privilege gain on exec | 3.5 | — | Yes |
 | seccomp-BPF | Syscall allowlist with argument checks | 3.5; `KILL_PROCESS` 4.14 | NNP | Yes |
-| Landlock | Filesystem (+ TCP, scoping) access control | ABI 1: 5.13; 3: 6.2; 4: 6.7; 5: 6.10; 6: 6.12 | NNP | ABI ≥ 3 |
+| Landlock | Filesystem (+ TCP, scoping) access control | ABI 1: 5.13; 2: 5.19; 3: 6.2; 4: 6.7; 5: 6.10; 6: 6.12; 7: 6.15; 8: 7.0; 9: 7.1 | NNP | ABI ≥ 3 |
 | cgroup v2 memory/cpu/pids, `memory.oom.group`, `memory.peak` | Limits and accounting | 4.5–5.19 | Delegated subtree | Yes |
 | `cgroup.kill` | Atomic subtree SIGKILL | 5.14 | Same | Yes |
 | `cgroup.events` | Empty notification (inotify) | 4.5 | Same | Yes |
@@ -415,7 +415,11 @@ CGROUP_PIDS, CGROUP_SCHED, CFS_BANDWIDTH, SECCOMP_FILTER, SECURITY_LANDLOCK`
   - The `landlock` crate runs at its hard-requirement level, never best-effort.
 - **Dev mode:** `--insecure-dev-mode` (single-UID map, no idmap) exists only
   behind a Cargo feature that release builds omit, and every result produced
-  under it is labelled as such.
+  under it is labelled as such. The one mapped identity is namespace uid/gid 0
+  equal to the caller. Namespace uid 1000 does not exist, so the workload
+  stays uid 0 and drops its capability sets with `capset` (E4). The map write
+  has to deny `setgroups`, so supplementary groups cannot be cleared. That is
+  part of why the mode is insecure.
 
 ---
 
@@ -468,14 +472,14 @@ accepts only `Restricted<SeccompApplied>`, so a missing or reordered step
 | 4 | Stage 2 | Block on the sync pipe | Overflow UID; almost powerless |
 | 5 | idmap | Write maps | Needs host caps from outside |
 | 6 | Stage 2 | `setresuid/gid(0)` in the ns; verify the sealed spec | Caps are now userns-only |
-| 7 | Stage 2 | rprivate; build root; `pivot_root`; detach; root read-only | No untrusted code exists yet |
-| 8 | Stage 2 | Hostname; rlimits; `max_user_namespaces=0` (E3) | — |
+| 7 | Stage 2 | rprivate; write `max_user_namespaces=0` through the inherited proc; build root, including `proc` with `subset=pid`; `pivot_root`; detach; root read-only | `subset=pid` hides `/proc/sys` (E3), so the sysctl write cannot follow the proc mount. A `proc` mount returns `EPERM` unless this process is in a new PID namespace |
+| 8 | Stage 2 | Hostname; rlimits | — |
 | 9 | Stage 2 | `close_range` except the keep-list | Last point before untrusted code |
 | 10 | Stage 2 | `PR_SET_DUMPABLE 0`; `fork` | — |
 | 11a | Workload | `setsid` | No controlling TTY |
-| 11b | Workload | `PR_CAPBSET_DROP` all (needs `CAP_SETPCAP`) | Before the UID switch |
-| 11c | Workload | `setgroups(0)`; `setresgid(1000)`; `setresuid(1000)` | GID before UID |
-| 11d | Workload | Clear ambient/inheritable; lock securebits (exact order fixed by E4) | — |
+| 11b | Workload | `PR_CAPBSET_DROP` all (needs `CAP_SETPCAP`) | Before any credential change |
+| 11c | Workload | Clear ambient and inheritable; lock securebits **without** setting `SECBIT_NO_SETUID_FIXUP` (E4) | Locking needs `CAP_SETPCAP`, which a later uid change drops |
+| 11d | Workload | Production: `setgroups(0)`, `setresgid(1000)`, `setresuid(1000)`. Dev mode: `capset` permitted and effective to 0 and stay at uid 0 | GID before UID. Dev mode has no uid 1000, and `setgroups` is already denied (E4) |
 | 11e | Workload | `PR_SET_NO_NEW_PRIVS` | Needed for Landlock and seccomp |
 | 11f | Workload | `landlock_restrict_self` | Before seccomp, so seccomp need not allow it |
 | 11g | Workload | `seccomp(SET_MODE_FILTER)` | Last restriction |
@@ -530,7 +534,7 @@ documented leak.
 
 ### 6.3 Propagation and binds
 
-- `MS_REC|MS_PRIVATE` on `/` first.
+- `MS_REC|MS_PRIVATE` on `/` first. Mounting `proc` from inside the user namespace also requires the new PID namespace created in step 2; without it the mount returns `EPERM` (E3).
 - Every bind goes through `open_tree(CLONE)`, `mount_setattr` and `move_mount`
   onto a target dirfd.
 - Sources are validated with `^/nix/store/[0-9a-z]{32}-[^/]+$` and opened with
@@ -645,7 +649,7 @@ deliberate non-goal [L13].
 | `clone` | Allowed only without `CLONE_NEW*` flags |
 | `clone3` | `ENOSYS` (libc falls back to `clone`) |
 | `socket`, `socketpair` | Family allowlist |
-| `ioctl` | `FIONREAD`, `FIONBIO`, `FIOCLEX`, `FIONCLEX`, `TCGETS`, `TIOCGWINSZ` only |
+| `ioctl` | `FIONREAD`, `FIONBIO`, `FIOCLEX`, `FIONCLEX`, `TCGETS`, `TCGETS2`, `TIOCGWINSZ` only |
 | `prctl` | Named options only |
 | `personality` | Query and `PER_LINUX` only |
 | `seccomp` | `SET_MODE_FILTER` without `NEW_LISTENER` (adding filters can only narrow) |

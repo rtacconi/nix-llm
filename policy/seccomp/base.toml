@@ -32,6 +32,18 @@ name = "openat"
 reason = "open files; reach limited by the mount view and Landlock"
 
 [[allow]]
+name = "open"
+reason = "glibc still issues open for some absolute paths"
+
+[[allow]]
+name = "access"
+reason = "dynamic linker probes optional preload files"
+
+[[allow]]
+name = "readlink"
+reason = "resolve the executable path during startup"
+
+[[allow]]
 name = "close"
 reason = "release descriptors"
 
@@ -333,6 +345,11 @@ constraint = "ioctl_safe_set"
 name = "prctl"
 reason = "thread names and dumpable queries only"
 constraint = "prctl_safe_set"
+
+[[allow]]
+name = "seccomp"
+reason = "install a further narrowing filter"
+constraint = "filter_only"
 
 [[allow]]
 name = "personality"
